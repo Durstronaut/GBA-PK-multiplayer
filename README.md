@@ -1,6 +1,9 @@
 # GBA-PK-multiplayer
 
-This is a free mod that adds multiplayer interactions to the 3rd generation Pokémon games. Players can see, walk around, trade and battle with each other. Updates and more information can be found on YouTube, Patreon or PokéCommunity.
+A free mod that adds multiplayer to the 3rd-generation Pokémon games. Players can see each
+other, walk around together, trade, battle, and run a co-op **Soullocke** — all from a
+single Lua script in mGBA. Works on the official FireRed/LeafGreen, Ruby/Sapphire and
+Emerald ROMs (and many romhacks), including randomized ROMs.
 
 ## Supported games
 
@@ -128,6 +131,9 @@ enable it.
 - **Shared fate.** When a linked Pokémon faints, the handler marks it dead and tells the
   other games, which **faint the linked partner(s)** so nobody can keep using half a link.
   Revived "dead" Pokémon are re-fainted (no revives).
+- **Same team, same box.** When you bench a linked Pokémon (move it to the PC) or add it
+  back to your team, the other players are told to do the same with their linked partner,
+  so soul-linked Pokémon stay together on the team or in the box.
 - **Rule reminders.** Catching a second Pokémon in an area, catching a species you already
   own (dupes clause), blacking out, and "nickname everything" are surfaced as console
   notes as they come up.
@@ -156,11 +162,11 @@ the **same base game** (areas are matched by the game's met-location ids).
 - Soul-links are matched by area, so players should catch together, on the same game.
 - Catching with a **full party** (the catch goes straight to the PC) isn't detected as a
   new link — box a slot first, as you normally would in a Nuzlocke.
-- The handler acts on Pokémon **in the party**; it can't reach the PC boxes, so a boxed
-  partner of a fallen Pokémon is flagged for you to release rather than auto-fainted.
+- The handler reads Pokémon **in the party** and prompts you to box/withdraw/release to
+  keep links in sync; it doesn't move Pokémon in your PC for you (writing PC storage safely
+  across every ROM and romhack isn't guaranteed), so you perform the box moves yourself when
+  prompted. A boxed partner of a fallen Pokémon is likewise flagged for you to release.
 
-## Links
+## Support
 
-- Patreon: https://www.patreon.com/user?u=81688818
-- YouTube: https://www.youtube.com/channel/UCdXg0-BF9FblZ2GTi3u4orQ
-- PokéCommunity: https://www.pokecommunity.com/showthread.php?t=484949
+If you'd like to support the project: https://ko-fi.com/ynnead

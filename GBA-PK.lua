@@ -10,6 +10,7 @@ local Nickname   = ""            -- up to 10 chars. Blank = use your in-game nam
 local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
+local ScriptVersion = "1.0.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -10768,6 +10769,11 @@ function ReceiveData(SocketMain)
 				packet.SoulArea = string.byte(ReadData, 21)
 				packet.SoulPID = string.byte(ReadData, 22) | (string.byte(ReadData, 23) << 8) | (string.byte(ReadData, 24) << 16) | (string.byte(ReadData, 25) << 24)
 				packet.IsSpecial = true
+			elseif packet.RequestType == "SBOX" then
+				--Soullocke bench/return: area(1) benched(1)
+				packet.SoulArea = string.byte(ReadData, 21)
+				packet.SoulBenched = string.byte(ReadData, 22)
+				packet.IsSpecial = true
 			else
 				packet.RequestBytes = tonumber(string.sub(packet.ExtraData, 1, 4))
 				packet.Battle = string.byte(string.sub(packet.ExtraData, 5, 5)) | (string.byte(string.sub(packet.ExtraData, 6, 6)) << 8) | (string.byte(string.sub(packet.ExtraData, 7, 7)) << 16) | (string.byte(string.sub(packet.ExtraData, 8, 8)) << 24)
@@ -10992,6 +10998,8 @@ function ReceiveData(SocketMain)
 							SoulHandleRemoteCatch(packet.PlayerID, packet.SoulArea, packet.SoulPID, packet.SoulSpecies, packet.SoulNick)
 						elseif packet.RequestType == "SDIE" then
 							SoulHandleRemoteDeath(packet.PlayerID, packet.SoulArea, packet.SoulPID)
+						elseif packet.RequestType == "SBOX" then
+							SoulHandleRemoteBox(packet.PlayerID, packet.SoulArea, packet.SoulBenched)
 						end
 
 						if IsCorrectPlayer then
@@ -11636,6 +11644,12 @@ function CreateSpecialPacket(Socket, RequestTemp, PacketTemp, DataToUse, Optiona
 		local p = o.pid or 0
 		local payload = safeStringChar((o.area or 0) & 0xFF)
 			.. safeStringChar(p & 0xFF) .. safeStringChar((p >> 8) & 0xFF) .. safeStringChar((p >> 16) & 0xFF) .. safeStringChar((p >> 24) & 0xFF)
+		Packet = PacketGameID .. PacketNickname .. PacketPlayerID .. PacketSendToID .. RequestTemp .. payload .. string.rep("F", 43 - #payload) .. "U"
+		Socket:send(Packet)
+	elseif RequestTemp == "SBOX" then
+		--Soullocke: a linked Pokemon was benched/re-teamed. Payload = area(1) benched(1).
+		local o = Optional or {}
+		local payload = safeStringChar((o.area or 0) & 0xFF) .. safeStringChar((o.pid or 0) & 0xFF)
 		Packet = PacketGameID .. PacketNickname .. PacketPlayerID .. PacketSendToID .. RequestTemp .. payload .. string.rep("F", 43 - #payload) .. "U"
 		Socket:send(Packet)
 	end
@@ -15171,9 +15185,11 @@ end
 
 --Detect faints (edge from alive to 0 HP), enforce no-revive, and propagate death.
 function SoulCheckDeaths()
+	local curParty = {}
 	for slot = 1, 6 do
 		local info = SoulReadSlot(slot)
 		if info then
+			curParty[info.pid] = true
 			-- no-revive: a mon already resolved dead must stay fainted
 			if SoulDeadPIDs[info.pid] and info.hp > 0 then
 				emu:write16(gAddress[GameID].gParty + 100 * (slot - 1) + 0x56, 0)
@@ -15197,6 +15213,52 @@ function SoulCheckDeaths()
 			end
 			SoulPartyHP[info.pid] = info.hp
 		end
+	end
+	SoulCheckBoxing(curParty)
+end
+
+--"Same team, same box": watch whether each of my linked Pokemon is on the team
+--or benched (in the PC), and tell partners so they can keep their link in sync.
+--This is prompt-based on purpose — reliably writing PC boxes across every Gen 3
+--ROM (and romhack) variant isn't safe, so each player performs the move.
+function SoulCheckBoxing(curParty)
+	for area, a in pairs(SoulLinks) do
+		if type(area) == "number" and a[PlayerID] then
+			local rec = a[PlayerID]
+			if not rec.dead then
+				local nowIn = curParty[rec.pid] == true
+				if rec.inParty == nil then
+					rec.inParty = nowIn
+				elseif rec.inParty ~= nowIn then
+					rec.inParty = nowIn
+					if nowIn then
+						SoulMsg("Returned " .. SoulDecodeNick(rec.nick) .. " to your team (area " ..
+							area .. "). Partner(s) told to add theirs back.")
+					else
+						SoulMsg("Benched " .. SoulDecodeNick(rec.nick) .. " (area " ..
+							area .. "). Partner(s) told to box theirs.")
+					end
+					SoulBroadcast("SBOX", area, nowIn and 0 or 1, nil, nil)
+				end
+			end
+		end
+	end
+end
+
+--Incoming: a partner benched (benched==1) or re-teamed (0) their linked Pokemon.
+function SoulHandleRemoteBox(fromID, area, benched)
+	if not Soullocke then return end
+	local a = SoulLinks[area]
+	if not a then return end
+	if a[fromID] then a[fromID].benched = (benched == 1) end
+	local who = SoulPlayerName(fromID)
+	local mine = (a[PlayerID] and SoulDecodeNick(a[PlayerID].nick)) or ("your link")
+	if benched == 1 then
+		SoulMsg("Same team, same box: " .. who .. " benched their link (area " .. area ..
+			"). Box " .. mine .. " to stay in sync.")
+	else
+		SoulMsg("Same team, same box: " .. who .. " added their link back (area " .. area ..
+			"). Put " .. mine .. " back on your team.")
 	end
 end
 
@@ -15924,7 +15986,8 @@ function soul_status()
 		local parts = {}
 		for id, rec in pairs(a) do
 			if type(id) == "number" then
-				parts[#parts + 1] = SoulPlayerName(id) .. ":" .. SoulDecodeNick(rec.nick) .. (rec.dead and "(dead)" or "")
+				local tag = rec.dead and "(dead)" or ((rec.inParty == false or rec.benched) and "(boxed)" or "")
+				parts[#parts + 1] = SoulPlayerName(id) .. ":" .. SoulDecodeNick(rec.nick) .. tag
 			end
 		end
 		console:log("  area " .. area .. " -> " .. table.concat(parts, " <-> "))
@@ -16087,7 +16150,7 @@ end
 function DrawConnectMenu()
 	MenuUI = pickMenuUI()
 	MenuUI:render({
-		title = "===== GBA-PK Multiplayer =====",
+		title = "===== GBA-PK Multiplayer v" .. ScriptVersion .. " =====",
 		subtitle = "D-pad to move, A to choose.",
 		options = {
 			"Host a game",
@@ -16365,7 +16428,7 @@ if NativeLua then
 else
 	SocketMain = socket:tcp()
 
-	console:log("Started GBA-PK. Type help() for commands, or use the in-game menu.")
+	console:log("Started GBA-PK v" .. ScriptVersion .. ". Type help() for commands, or use the in-game menu.")
 	if not (emu == nil) then
 		StartScript()
 	end
