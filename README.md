@@ -49,10 +49,18 @@ client and server script.
    - **Host a game** — others connect to your IP address.
    - **Join a game** — connect to the host's IP (set `ServerIP` in the config, or use
      `join("their.ip.address")`).
+   - **Set name** — type a nickname with the D-pad (Up/Down change the letter, Left/Right
+     move the cursor, **A** confirms, **B** backspaces).
 
 That's it. Up to 4 players (host + 3) can see, walk around, trade and battle with each
-other. Everyone must use the same port (default `4096`); the host may need to port-forward
-it for players over the internet.
+other in the overworld. Everyone must use the same port (default `4096`); the host may
+need to port-forward it for players over the internet.
+
+> **Note on the menu:** mGBA 0.10.x's scripting can't draw over the game screen, so the
+> menu lives in the scripting console panel (still driven by the emulator's D-pad). The
+> menu is rendered through a swappable backend (`ConsoleMenuUI`), with a `ScreenMenuUI`
+> stub ready for when a newer mGBA gains a screen-draw API — at which point the menu can
+> move on-screen without changing any menu logic.
 
 ### Configuration
 

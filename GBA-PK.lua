@@ -139,6 +139,9 @@ local NativeLua = false
 local MenuActive = false     -- GBA-PK: connection menu state
 local MenuSel = 1
 local MenuPrevKeys = 0
+local MenuScreen = "connect" -- "connect" or "name" (nickname editor)
+local NameBuf = { "A" }      -- working buffer for the D-pad name editor
+local NamePos = 1            -- cursor position in NameBuf
 local MainBattleFunc_Saved = 0
 
 local PositionData = {
@@ -15212,6 +15215,7 @@ function host()
 	Role = "host"
 	ServerType = "h"
 	MenuActive = false
+	if ConsoleForText then ConsoleForText:clear() end
 	CreateNetwork()
 	console:log("Hosting on port " .. Port .. ". Tell friends to join your IP address.")
 end
@@ -15223,6 +15227,7 @@ function join(ip)
 	Role = "join"
 	ServerType = "c"
 	MenuActive = false
+	if ConsoleForText then ConsoleForText:clear() end
 	console:log("Connecting to " .. IPAddress .. ":" .. Port .. " ...")
 	ConnectNetwork()
 end
@@ -15260,35 +15265,186 @@ function disconnect()
 	ShowConnectMenu()
 end
 
--- D-pad Host/Join menu shown in the GBA-PK console panel ---------------
-local MenuOptions = { "Host a game", "Join a game" }
+-- ===================== GBA-PK menu UI backend ========================
+-- The menu is drawn through a swappable UI "backend" so it can move from the
+-- script console panel to an ON-SCREEN overlay once mGBA gains a screen-draw
+-- API (0.11+). A backend just needs :available() and :render(screen), where a
+-- screen is: { title=, subtitle=, options={...}, selected=, footer={...} }.
+--
+-- TO MIGRATE to an in-game overlay when 0.11 ships: implement
+-- ScreenMenuUI:render() with the overlay/image API and make
+-- ScreenMenuUI:available() return true. MenuUI auto-selects it; nothing else
+-- in the menu logic changes.
+
+local ConsoleMenuUI = {}
+function ConsoleMenuUI:available()
+	return ConsoleForText ~= nil
+end
+function ConsoleMenuUI:render(screen)
+	if not ConsoleForText then return end
+	local pad = "                              "
+	ConsoleForText:clear()
+	local row = 0
+	ConsoleForText:moveCursor(0, row); ConsoleForText:print((screen.title or "") .. pad); row = row + 1
+	if screen.subtitle then
+		ConsoleForText:moveCursor(0, row); ConsoleForText:print(screen.subtitle .. pad); row = row + 1
+	end
+	row = row + 1
+	local opts = screen.options or {}
+	for i = 1, #opts do
+		ConsoleForText:moveCursor(0, row)
+		local prefix = (i == screen.selected) and " > " or "   "
+		ConsoleForText:print(prefix .. opts[i] .. pad); row = row + 1
+	end
+	row = row + 1
+	local foot = screen.footer or {}
+	for i = 1, #foot do
+		ConsoleForText:moveCursor(0, row); ConsoleForText:print(foot[i] .. pad); row = row + 1
+	end
+end
+
+-- Stub on-screen overlay backend for mGBA 0.11+ (draw over the game itself).
+local ScreenMenuUI = {}
+function ScreenMenuUI:available()
+	return false  -- TODO: return true once mGBA's screen-draw API is present
+end
+function ScreenMenuUI:render(screen)
+	-- TODO(0.11): draw `screen` as an overlay on the emulated display.
+end
+
+local function pickMenuUI()
+	if ScreenMenuUI:available() then return ScreenMenuUI end
+	return ConsoleMenuUI
+end
+local MenuUI = pickMenuUI()
+
+-- ===================== GBA-PK connect / name menu ====================
+-- Key bits returned by emu:getKeys()
+local KEY_A, KEY_B     = 0x1, 0x2
+local KEY_RIGHT, KEY_LEFT, KEY_UP, KEY_DOWN = 0x10, 0x20, 0x40, 0x80
+
+local MenuOptions = { "Host a game", "Join a game", "Set name" }
+local NameChars = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+local function nameString()
+	return table.concat(NameBuf)
+end
 
 function DrawConnectMenu()
-	if not ConsoleForText then return end
-	ConsoleForText:clear()
-	ConsoleForText:moveCursor(0, 0)
-	ConsoleForText:print("======= GBA-PK Multiplayer =======")
-	ConsoleForText:moveCursor(0, 1)
-	ConsoleForText:print("D-pad Up/Down to move, press A to pick.")
-	for i = 1, #MenuOptions do
-		ConsoleForText:moveCursor(0, 2 + i)
-		local label = MenuOptions[i]
-		if label == "Join a game" then label = "Join " .. IPAddress end
-		local prefix = (i == MenuSel) and " > " or "   "
-		ConsoleForText:print(prefix .. label .. "                        ")
+	MenuUI = pickMenuUI()
+	MenuUI:render({
+		title = "===== GBA-PK Multiplayer =====",
+		subtitle = "D-pad to move, A to choose.",
+		options = {
+			"Host a game",
+			"Join " .. IPAddress,
+			"Set name (" .. (Nickname ~= "" and Nickname or "auto") .. ")",
+		},
+		selected = MenuSel,
+		footer = {
+			"Port " .. Port .. "   Up to " .. MaxPlayers .. " players.",
+			"Or type host() / join(\"IP\").",
+		},
+	})
+end
+
+function DrawNameEditor()
+	MenuUI = pickMenuUI()
+	local shown = ""
+	for i = 1, #NameBuf do
+		if i == NamePos then shown = shown .. "[" .. NameBuf[i] .. "]"
+		else shown = shown .. " " .. NameBuf[i] .. " " end
 	end
-	ConsoleForText:moveCursor(0, 4 + #MenuOptions)
-	ConsoleForText:print("Name: " .. (Nickname ~= "" and Nickname or "(in-game name)") .. "   Port: " .. Port .. "     ")
-	ConsoleForText:moveCursor(0, 5 + #MenuOptions)
-	ConsoleForText:print("Or type host() / join(\"IP\") in this box.")
+	MenuUI:render({
+		title = "===== Set your name =====",
+		subtitle = "Up/Down: letter   Left/Right: move",
+		options = { shown },
+		selected = 0,
+		footer = {
+			"A: confirm   B: backspace   (max 10)",
+			"Name: " .. nameString(),
+		},
+	})
 end
 
 function ShowConnectMenu()
 	if Hosting or Connected then return end
 	MenuActive = true
+	MenuScreen = "connect"
 	MenuSel = 1
 	MenuPrevKeys = emu and emu:getKeys() or 0
 	DrawConnectMenu()
+end
+
+local function startNameEditor()
+	MenuScreen = "name"
+	NameBuf = {}
+	local seed = (Nickname ~= "" and Nickname) or "A"
+	for i = 1, #seed do NameBuf[i] = string.sub(seed, i, i) end
+	if #NameBuf == 0 then NameBuf = { "A" } end
+	NamePos = 1
+	DrawNameEditor()
+end
+
+local function cycleChar(dir)
+	local c = NameBuf[NamePos] or "A"
+	local idx = string.find(NameChars, c, 1, true) or 1
+	idx = idx + dir
+	local n = #NameChars
+	if idx < 1 then idx = n end
+	if idx > n then idx = 1 end
+	NameBuf[NamePos] = string.sub(NameChars, idx, idx)
+end
+
+local function handleConnectKeys(pressed)
+	if (pressed & KEY_UP) ~= 0 then
+		MenuSel = MenuSel - 1
+		if MenuSel < 1 then MenuSel = #MenuOptions end
+		DrawConnectMenu()
+	elseif (pressed & KEY_DOWN) ~= 0 then
+		MenuSel = MenuSel + 1
+		if MenuSel > #MenuOptions then MenuSel = 1 end
+		DrawConnectMenu()
+	elseif (pressed & KEY_A) ~= 0 then
+		if MenuSel == 1 then
+			MenuActive = false; host()
+		elseif MenuSel == 2 then
+			MenuActive = false; join()
+		else
+			startNameEditor()
+		end
+	end
+end
+
+local function handleNameKeys(pressed)
+	if (pressed & KEY_UP) ~= 0 then
+		cycleChar(1); DrawNameEditor()
+	elseif (pressed & KEY_DOWN) ~= 0 then
+		cycleChar(-1); DrawNameEditor()
+	elseif (pressed & KEY_LEFT) ~= 0 then
+		if NamePos > 1 then NamePos = NamePos - 1 end
+		DrawNameEditor()
+	elseif (pressed & KEY_RIGHT) ~= 0 then
+		if NamePos < #NameBuf then
+			NamePos = NamePos + 1
+		elseif #NameBuf < 10 then
+			NameBuf[#NameBuf + 1] = "A"; NamePos = #NameBuf
+		end
+		DrawNameEditor()
+	elseif (pressed & KEY_B) ~= 0 then
+		if #NameBuf > 1 then
+			table.remove(NameBuf)
+			if NamePos > #NameBuf then NamePos = #NameBuf end
+			DrawNameEditor()
+		else
+			MenuScreen = "connect"; DrawConnectMenu()
+		end
+	elseif (pressed & KEY_A) ~= 0 then
+		local nm = string.gsub(nameString(), "%s+$", "")
+		if nm ~= "" then Nickname = utf8_cut(nm, 10) end
+		MenuScreen = "connect"
+		DrawConnectMenu()
+	end
 end
 
 function MenuLogic()
@@ -15297,17 +15453,11 @@ function MenuLogic()
 	local k = emu:getKeys()
 	local pressed = k & (~MenuPrevKeys)
 	MenuPrevKeys = k
-	if (pressed & 0x40) ~= 0 then            -- Up
-		MenuSel = MenuSel - 1
-		if MenuSel < 1 then MenuSel = #MenuOptions end
-		DrawConnectMenu()
-	elseif (pressed & 0x80) ~= 0 then        -- Down
-		MenuSel = MenuSel + 1
-		if MenuSel > #MenuOptions then MenuSel = 1 end
-		DrawConnectMenu()
-	elseif (pressed & 0x1) ~= 0 then         -- A button
-		MenuActive = false
-		if MenuSel == 1 then host() else join() end
+	if pressed == 0 then return end
+	if MenuScreen == "name" then
+		handleNameKeys(pressed)
+	else
+		handleConnectKeys(pressed)
 	end
 end
 
