@@ -9653,7 +9653,21 @@ end
 --overworld graphics id. We draw the facing frame (down/up/left; right reuses the
 --left frame and is flipped by DrawPlayer), and load the sprite's palette into a
 --dedicated OAM slot so its colours are correct. Returns true on success.
-function DrawSkinnedPlayer(tileset, gfxId, frame)
+--GBA-PK: map the mod's pose name to a ROM overworld sprite frame + its idle
+--fallback frame. Gen 3 overworld sprites: 0=face south, 1=north, 2=west; walk
+--steps 3/4 south, 5/6 north, 7/8 west. Right reuses west (DrawPlayer flips it).
+function SkinFrameFromName(name)
+	local dir = 0  -- 0=south(down), 1=north(up), 2=west(left/right)
+	if string.find(name, "Up") then dir = 1
+	elseif string.find(name, "Left") or string.find(name, "Right") then dir = 2 end
+	local step = { [0] = 3, [1] = 5, [2] = 7 }
+	local step2 = { [0] = 4, [1] = 6, [2] = 8 }
+	if string.find(name, "Cycle 1") then return step[dir], dir end
+	if string.find(name, "Cycle 2") then return step2[dir], dir end
+	return dir, dir
+end
+
+function DrawSkinnedPlayer(tileset, gfxId, frame, idleFrame)
 	if not ROMCARD then return false end
 	local ga = gAddress[GameID]
 	if not ga.gGraphicsInfo or not ga.sObjectEventSpritePalettes then return false end
@@ -9663,8 +9677,13 @@ function DrawSkinnedPlayer(tileset, gfxId, frame)
 	local paletteTag = ROMCARD:read16(sprite + 2)
 	local imageTable = ROMCARD:read32(sprite + 28)
 	if imageTable < ROM_LO or imageTable >= ROM_HI then return false end
-	--frame: 0 = face south (down), 1 = face north (up), 2 = face west (left/right, flipped by DrawPlayer)
-	local frameData = ROMCARD:read32(imageTable + 8 * (frame or 0))
+	--frame index into the sprite's image table; fall back to the idle facing frame
+	--if a walk-step frame is missing (some sprites have fewer frames)
+	frame = frame or 0
+	local frameData = ROMCARD:read32(imageTable + 8 * frame)
+	if (frameData < ROM_LO or frameData >= ROM_HI) and idleFrame and idleFrame ~= frame then
+		frameData = ROMCARD:read32(imageTable + 8 * idleFrame)
+	end
 	if frameData < ROM_LO or frameData >= ROM_HI then return false end
 	--write one 16x32 frame (64 words) into this draw-slot's tile bank
 	local addr = 0x6013C00 - (tileset * 0x600)
@@ -9697,6 +9716,81 @@ function DrawSkinnedPlayer(tileset, gfxId, frame)
 	return true
 end
 
+
+--GBA-PK: a small "!" speech-bubble emote shown in-world above a remote player
+--who is currently in a battle. It reuses the player's own draw slot -- a few
+--otherwise-unused tiles in that slot's tile bank, a dedicated OBJ palette slot,
+--and the third ("extra") OAM object, which is free while a player stands idle
+--during a battle -- so it needs no new OAM/tile allocation. 16x16, drawn on top.
+local EMOTE_TILE = 44            --tile offset inside the 48-tile per-player bank
+local EMOTE_PAL  = 12            --dedicated OBJ palette slot for the emote
+--pixel map: 0 = transparent, 1 = white bubble, 2 = dark outline, 3 = red mark
+local EmotePixels = {
+	{0,0,0,2,2,2,2,2,2,2,2,2,0,0,0,0},
+	{0,0,2,1,1,1,1,1,1,1,1,1,2,0,0,0},
+	{0,2,1,1,1,1,1,1,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,1,1,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,2,1,1,1,1,3,3,1,1,1,1,1,2,0,0},
+	{0,0,2,1,1,1,1,1,1,1,1,1,2,0,0,0},
+	{0,0,0,2,2,1,1,1,1,2,2,0,0,0,0,0},
+	{0,0,0,0,0,2,1,1,2,0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0},
+	{0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+}
+--RGB555 colours (index 0 is transparent for OBJs regardless of value)
+local EmotePalette = { 0x0000, 0x7FFF, 0x0000, 0x001F }
+local EmoteTileWords = nil       --lazily packed: 32 words (4 tiles x 8 rows)
+local function BuildEmoteWords()
+	local words = {}
+	--16x16 1D-mapped OBJ tile order: top-left, top-right, bottom-left, bottom-right
+	local quads = { {0,0}, {8,0}, {0,8}, {8,8} }
+	for _, q in ipairs(quads) do
+		local ox, oy = q[1], q[2]
+		for row = 0, 7 do
+			local w = 0
+			for col = 0, 7 do
+				local px = EmotePixels[oy + row + 1][ox + col + 1] & 0xF
+				w = w | (px << (col * 4))
+			end
+			words[#words + 1] = w
+		end
+	end
+	return words
+end
+
+function DrawBattleEmote(tileset, HeadX, HeadY)
+	if not EmoteTileWords then EmoteTileWords = BuildEmoteWords() end
+	local ga = gAddress[GameID]
+	if not ga or not ga.gSprite then return end
+	--write the 4 emote tiles into this draw slot's tile bank
+	local tileAddr = (0x6013C00 - tileset * 0x600) + EMOTE_TILE * 32
+	for i = 1, #EmoteTileWords do
+		emu:write32(tileAddr + (i - 1) * 4, EmoteTileWords[i])
+	end
+	--load the emote palette into its dedicated OBJ palette slot (faded + unfaded)
+	if ga.gPaletteFaded and ga.gPaletteUnfaded then
+		local fdst = ga.gPaletteFaded + 0x200 + EMOTE_PAL * 32
+		local udst = ga.gPaletteUnfaded + 0x200 + EMOTE_PAL * 32
+		for i = 1, #EmotePalette do
+			local c = EmotePalette[i]
+			emu:write16(fdst + (i - 1) * 2, c)
+			emu:write16(udst + (i - 1) * 2, c)
+		end
+	end
+	--place the emote just above the player's head using their spare OAM object,
+	--drawn on top (priority 0)
+	local PlayerAddress = ga.gSprite - (tileset * 24)
+	local Bank = 480 - (tileset * 48)
+	local ConstructEmote = (EMOTE_PAL * 4096) + (0 * 1024) + (Bank + EMOTE_TILE)
+	WriteToSpriteList(PlayerAddress + 16, HeadX, HeadY - 14, 128, "16x16", ConstructEmote, 0, 0, 0)
+end
+
 function CreatePlayer(id, tileset)
 	SkinPalSlot[tileset] = nil
 	local AnimationTable = gAddress[GameID].sAnimationTable
@@ -9705,18 +9799,16 @@ function CreatePlayer(id, tileset)
 	--which is reliable across poses and games; right reuses the left frame and is flipped.
 	local sp = FindPlayerByID(id)
 	if sp and sp:GetSkin() ~= 0 and (sp.SpriteType == 0 or sp.SpriteType == nil) then
-		local frame = 0
+		local frame, idleFrame = 0, 0
 		local items = drawplayertable[id]
 		if items and items[1] then
 			local tbl = AnimationTable
 			if items[1].Gender == 1 then tbl = tbl + 1 end
 			local st = spriteData[tbl]
 			local name = (st and st[items[1].Animation] and st[items[1].Animation].Animation) or ""
-			if string.find(name, "Up") then frame = 1
-			elseif string.find(name, "Left") or string.find(name, "Right") then frame = 2
-			else frame = 0 end
+			frame, idleFrame = SkinFrameFromName(name)
 		end
-		if DrawSkinnedPlayer(tileset, sp:GetSkin(), frame) then
+		if DrawSkinnedPlayer(tileset, sp:GetSkin(), frame, idleFrame) then
 			return
 		end
 	end
@@ -9999,6 +10091,8 @@ end
 function DrawPlayer(id, FinalMapX, FinalMapY, SpriteType, Direction, AnimationFrame, AnimationCycle, SurfFrame, MenuType, RealID, SizeOpt, PaletteOpt)
 		
 		local PlayerAddress = gAddress[GameID].gSprite - (id * 24)
+		--GBA-PK: head position for the over-head battle emote (before any mutation)
+		local EmoteHeadX, EmoteHeadY = FinalMapX, FinalMapY
 		--UNUSED
 		local PaletteAddress = 0x5000200
 		--local PaletteFRLG = {1532973838, 979061535, 1025974543, 681783525, 2006654082, 709442350, 555232671, 32767}
@@ -10165,6 +10259,14 @@ function DrawPlayer(id, FinalMapX, FinalMapY, SpriteType, Direction, AnimationFr
 			if GetAnimationSizeSlot(RealID, 1) ~= "32x32" and (GetAnimationTableSlot(RealID, 2) == 1004 or GetAnimationTableSlot(RealID, 2) == 1005) and gAddress[GameID].sGameType == "RSE" then
 				FinalMapY = FinalMapY + 16
 				WriteToSpriteList(PlayerAddress, FinalMapX, FinalMapY, 128, SlotSize, ConstructSprite5, 0, 0, 0)
+			end
+		end
+		--GBA-PK: over-head "!" emote above a remote player who is in a battle.
+		--Reuses the spare third OAM object, so only when it isn't already in use.
+		if RealID and RealID < 9999 and not GetSlotUsed(RealID, 3) then
+			local bp = FindPlayerByID(RealID)
+			if bp and bp.IsBattling and bp:IsBattling() then
+				DrawBattleEmote(id, EmoteHeadX, EmoteHeadY)
 			end
 		end
 		RefreshDrawSprite(RealID, 2)
@@ -15456,17 +15558,18 @@ local KEY_RIGHT, KEY_LEFT, KEY_UP, KEY_DOWN = 0x10, 0x20, 0x40, 0x80
 local MenuOptions = { "Host a game", "Join a game", "Set name", "Set skin" }
 local NameChars = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
---Curated overworld-sprite "skins" per game family (the game's own graphics ids).
+--Curated overworld-sprite "skins" per game version (the game's own graphics ids).
 --0 = your normal protagonist. Ids that don't exist on a game safely fall back to
---the protagonist, so this list can be tuned freely.
+--the protagonist, so these lists can be tuned freely.
 local SkinSets = {
-	FRLG = { 0, 5, 7, 9, 16, 21 },
-	RSE  = { 0, 5, 7, 9, 16, 25 },
+	FRLG = { 0, 5, 7, 9, 16, 21 },        -- FireRed / LeafGreen (verified in-game)
+	E    = { 0, 6, 7, 9, 10, 13, 14 },    -- Emerald (verified in-game)
+	RS   = { 0, 6, 7, 9, 10, 13, 14 },    -- Ruby / Sapphire (same OW sprite ids as Emerald)
 }
 local SkinSel = 1  -- index into the current game's skin list
 
 local function currentSkinList()
-	local t = (GameID and gAddress[GameID] and gAddress[GameID].sGameType) or "FRLG"
+	local t = (GameID and gAddress[GameID] and gAddress[GameID].sGameVersion) or "FRLG"
 	return SkinSets[t] or SkinSets.FRLG
 end
 

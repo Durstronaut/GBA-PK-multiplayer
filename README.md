@@ -60,6 +60,16 @@ That's it. Up to 4 players (host + 3) can see, walk around, trade and battle wit
 other in the overworld. Everyone must use the same port (default `4096`); the host may
 need to port-forward it for players over the internet.
 
+### Seeing other players
+
+- **Skins animate.** Other players' chosen overworld skins walk with a full walk
+  cycle (not a static frame) and face the direction they're moving, just like the
+  normal protagonist. The curated skin lists are per game — FireRed/LeafGreen,
+  Ruby/Sapphire and Emerald each use their own game's overworld sprites.
+- **Battle indicator.** When another player is in a battle, a small **"!"** bubble
+  appears above their overworld avatar so you can tell at a glance who's busy. It
+  clears automatically when their battle ends.
+
 > **Note on the menu:** mGBA 0.10.x's scripting can't draw over the game screen, so the
 > menu lives in the scripting console panel (still driven by the emulator's D-pad). The
 > menu is rendered through a swappable backend (`ConsoleMenuUI`), with a `ScreenMenuUI`
