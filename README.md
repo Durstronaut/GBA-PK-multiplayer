@@ -101,6 +101,63 @@ full list):
 | `who()` | List everyone in your session |
 | `status()` | Show connection status |
 | `disconnect()` | Leave the current session |
+| `soullocke(on)` | Turn the Soullocke handler on/off (omit the arg to toggle) |
+| `soul_dupes(on)` | Toggle the dupes clause |
+| `soul_typerule(on)` | Toggle the primary-type restriction |
+| `soul_autorelease(on)` | Toggle auto-removing dead linked mons from the party |
+| `soul_status()` | Show the Soullocke state and current soul-links |
+
+## Soullocke mode
+
+A **Soullocke** is a co-op, soul-linked [Nuzlocke](https://bulbapedia.bulbagarden.net/wiki/Nuzlocke_Challenge):
+two or more players run their games in parallel, the Pokémon they catch in the **same
+area** are "soul-linked", and linked Pokémon **share fates** — if one faints (dies), its
+partner dies too. This mod can run that bookkeeping for you automatically.
+
+Turn it on from the **"Soullocke setup"** entry in the in-game menu (before you host or
+join), or with `soullocke(true)` in the scripting box. Everyone in the session should
+enable it.
+
+**What it automates**
+
+- **Auto soul-linking.** When you catch a Pokémon, it's broadcast to the other players.
+  The first catch each player makes in a given area (its met location) forms a soul-link,
+  and you'll see `Soul-linked (area N): your NICK <-> DIXIE's NICK` in the console. Links
+  are rebuilt automatically whenever players connect, so they survive across sessions
+  without any save file of their own.
+- **Shared fate.** When a linked Pokémon faints, the handler marks it dead and tells the
+  other games, which **faint the linked partner(s)** so nobody can keep using half a link.
+  Revived "dead" Pokémon are re-fainted (no revives).
+- **Rule reminders.** Catching a second Pokémon in an area, catching a species you already
+  own (dupes clause), blacking out, and "nickname everything" are surfaced as console
+  notes as they come up.
+
+**Options** (in the setup menu, or via the commands above)
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| Soullocke | off | Master switch for the handler |
+| Dupes clause | **on** | Notes when your encounter is a species you already own, so you may skip it and re-encounter (recommended on) |
+| Primary-type rule | off | Warns if two team members share a primary type (recommended off, especially with 3+ players) |
+| Auto-release dead | off | When on, dead linked Pokémon are removed from the party automatically; when off, you box/release them yourself |
+
+You can also set the defaults at the top of `GBA-PK.lua` (`Soullocke`,
+`SoullockeDupesClause`, `SoullockeTypeRestriction`, `SoullockeAutoRelease`).
+
+**Works with randomized games.** The handler only reads structural game state — party
+data, HP, met location, and the ROM's base-stat table for types — so it works unchanged on
+ROMs randomized with tools like the
+[Universal Pokémon Randomizer (FVX)](https://github.com/upr-fvx/universal-pokemon-randomizer-fvx).
+Nothing assumes a specific species list. For soul-links to line up, everyone should play
+the **same base game** (areas are matched by the game's met-location ids).
+
+**Notes and limits**
+
+- Soul-links are matched by area, so players should catch together, on the same game.
+- Catching with a **full party** (the catch goes straight to the PC) isn't detected as a
+  new link — box a slot first, as you normally would in a Nuzlocke.
+- The handler acts on Pokémon **in the party**; it can't reach the PC boxes, so a boxed
+  partner of a fallen Pokémon is flagged for you to release rather than auto-fainted.
 
 ## Links
 

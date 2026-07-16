@@ -58,6 +58,38 @@ local BattleMain = 0
 local BattleLevelCap = 0
 local BattlePokemonCap = 0
 
+-- ============================ SOULLOCKE ==============================
+-- A "Soullocke" is a co-op soul-linked Nuzlocke. This handler automates the
+-- parts a script can enforce: it auto-links the Pokemon two (or more) players
+-- catch in the SAME area, and when a linked Pokemon faints ("death") it makes
+-- its linked partner(s) share that fate on the other player's game. The rest of
+-- the Nuzlocke ruleset is surfaced as in-console reminders.
+--
+-- Everything below reads only STRUCTURAL game state (party struct, HP, met
+-- location, base-stat types) so it works unchanged on RANDOMIZED ROMs (e.g. the
+-- Universal Pokemon Randomizer FVX) — nothing here assumes a specific species.
+--
+-- Toggle these in-game via the "Soullocke setup" menu entry (before you host or
+-- join) or any time with the soullocke()/soul_dupes()/soul_typerule()/
+-- soul_autorelease() console commands.
+local Soullocke                = false  -- master switch for the soul-link handler
+local SoullockeDupesClause     = true   -- optional rule: dupe species may be skipped (recommended ON)
+local SoullockeTypeRestriction = false  -- optional rule: no two same primary-type on a team (recommended OFF)
+local SoullockeAutoRelease     = false  -- when a link dies, remove the dead mon from the party (default OFF = box it yourself)
+
+-- Soullocke runtime state. This is DERIVED from the save + rebuilt over the
+-- network every session (each player re-broadcasts their catch list on connect),
+-- so it needs no on-disk persistence and honours the "no save states" rule.
+local SoulLinks        = {}   -- [area] = { [playerID] = { pid=, species=, nick=, dead=bool } }
+local SoulOwnSpecies   = {}   -- [species] = true : species you already own this run (dupes clause)
+local SoulPartyHP      = {}   -- [pid] = last-seen current HP (faint-edge detection)
+local SoulDeadPIDs     = {}   -- [pid] = true : your mons already resolved as dead (no-revive enforcement)
+local SoulAnnounced    = {}   -- [pid] = true : catches you have already broadcast
+local SoulSeenPlayers  = {}   -- [playerID] = true : players we have already synced our catch list to
+local SoulPartyCntPrev = -1   -- previous party count (catch detection)
+local SoulActive       = false-- becomes true once the handler has initialised this session
+-- ====================================================================
+
 --Variables you should be careful editing
 local ClientTimeout = 8000 --miliseconds. currently only reduces 1000 / second
 local DisableRenderWeather = false --set to true to hide players underwater/in fog
@@ -10724,6 +10756,18 @@ function ReceiveData(SocketMain)
 				packet.NicknameSpecial = string.sub(ReadData,21,63)
 				packet.NicknameSpecial = packet.NicknameSpecial:gsub("~*$", "")
 				if DebugMessages.Nickname then console:log("NICK: " .. packet.NicknameSpecial) end
+			elseif packet.RequestType == "SLNK" then
+				--Soullocke catch: area(1) pid(4) species(2) nick(10)
+				packet.SoulArea = string.byte(ReadData, 21)
+				packet.SoulPID = string.byte(ReadData, 22) | (string.byte(ReadData, 23) << 8) | (string.byte(ReadData, 24) << 16) | (string.byte(ReadData, 25) << 24)
+				packet.SoulSpecies = string.byte(ReadData, 26) | (string.byte(ReadData, 27) << 8)
+				packet.SoulNick = string.sub(ReadData, 28, 37)
+				packet.IsSpecial = true
+			elseif packet.RequestType == "SDIE" then
+				--Soullocke death: area(1) pid(4)
+				packet.SoulArea = string.byte(ReadData, 21)
+				packet.SoulPID = string.byte(ReadData, 22) | (string.byte(ReadData, 23) << 8) | (string.byte(ReadData, 24) << 16) | (string.byte(ReadData, 25) << 24)
+				packet.IsSpecial = true
 			else
 				packet.RequestBytes = tonumber(string.sub(packet.ExtraData, 1, 4))
 				packet.Battle = string.byte(string.sub(packet.ExtraData, 5, 5)) | (string.byte(string.sub(packet.ExtraData, 6, 6)) << 8) | (string.byte(string.sub(packet.ExtraData, 7, 7)) << 16) | (string.byte(string.sub(packet.ExtraData, 8, 8)) << 24)
@@ -10942,6 +10986,14 @@ function ReceiveData(SocketMain)
 							end
 						end
 						
+						--Soullocke packets are passive broadcasts, not tied to who you're
+						--talking to, so handle them before the trade/battle "talking" gate.
+						if packet.RequestType == "SLNK" then
+							SoulHandleRemoteCatch(packet.PlayerID, packet.SoulArea, packet.SoulPID, packet.SoulSpecies, packet.SoulNick)
+						elseif packet.RequestType == "SDIE" then
+							SoulHandleRemoteDeath(packet.PlayerID, packet.SoulArea, packet.SoulPID)
+						end
+
 						if IsCorrectPlayer then
 							if packet.RequestType == "ROFF" then
 								if DebugMessages.Network or DebugMessages.Battle or DebugMessages.Trade then console:log("Other player has refused the offer.") end
@@ -11565,11 +11617,27 @@ function CreateSpecialPacket(Socket, RequestTemp, PacketTemp, DataToUse, Optiona
 		
 		
 	elseif RequestTemp == "SLNK" then
-		PlayerReceiveID = PlayerTalkingID2
-		OptionalData = OptionalData or 0
-		local Filler = "100000000000000000000000000000000"
-		local SizeAct = OptionalData + 1000000000
-		Packet = GameID .. Nickname .. PlayerID2 .. PlayerReceiveID .. RequestTemp .. SizeAct .. Filler .. "U"
+		--Soullocke: announce a catch. Payload = area(1) pid(4) species(2) nick(10 charset bytes).
+		local o = Optional or {}
+		local p = o.pid or 0
+		local sp = o.species or 0
+		local nick = o.nick or ""
+		if #nick < 10 then nick = nick .. string.rep(safeStringChar(0xFF), 10 - #nick)
+		elseif #nick > 10 then nick = string.sub(nick, 1, 10) end
+		local payload = safeStringChar((o.area or 0) & 0xFF)
+			.. safeStringChar(p & 0xFF) .. safeStringChar((p >> 8) & 0xFF) .. safeStringChar((p >> 16) & 0xFF) .. safeStringChar((p >> 24) & 0xFF)
+			.. safeStringChar(sp & 0xFF) .. safeStringChar((sp >> 8) & 0xFF)
+			.. nick
+		Packet = PacketGameID .. PacketNickname .. PacketPlayerID .. PacketSendToID .. RequestTemp .. payload .. string.rep("F", 43 - #payload) .. "U"
+		Socket:send(Packet)
+	elseif RequestTemp == "SDIE" then
+		--Soullocke: announce a linked Pokemon's death. Payload = area(1) pid(4).
+		local o = Optional or {}
+		local p = o.pid or 0
+		local payload = safeStringChar((o.area or 0) & 0xFF)
+			.. safeStringChar(p & 0xFF) .. safeStringChar((p >> 8) & 0xFF) .. safeStringChar((p >> 16) & 0xFF) .. safeStringChar((p >> 24) & 0xFF)
+		Packet = PacketGameID .. PacketNickname .. PacketPlayerID .. PacketSendToID .. RequestTemp .. payload .. string.rep("F", 43 - #payload) .. "U"
+		Socket:send(Packet)
 	end
 end
 
@@ -14843,6 +14911,370 @@ function RemoveScriptFromMemory()
 	end
 end
 
+-- ======================= Soullocke handler =========================
+-- Self-contained. Reads only structural game state (party struct, HP, met
+-- location, base-stat types) so it is randomizer-safe. Messages go to the
+-- scripting console via console:log so they never fight the menu buffer.
+
+local SoulPendingRelease = {}  -- pids queued for auto-release once out of battle
+local SoulPollCounter = 0      -- throttles the party scan to a few times a second
+
+local SoulTypeNames = {
+	[0]="Normal",[1]="Fighting",[2]="Flying",[3]="Poison",[4]="Ground",[5]="Rock",
+	[6]="Bug",[7]="Ghost",[8]="Steel",[9]="???",[10]="Fire",[11]="Water",[12]="Grass",
+	[13]="Electric",[14]="Psychic",[15]="Ice",[16]="Dragon",[17]="Dark",
+}
+
+function SoulMsg(text)
+	console:log("[Soullocke] " .. text)
+end
+
+--Decode a 10-byte in-game-charset nickname into a readable string.
+function SoulDecodeNick(bytes)
+	if not bytes then return "?" end
+	local name = ""
+	for i = 1, #bytes do
+		local b = string.byte(bytes, i)
+		if not b or b == 0xFF then break end
+		local ch = findKeyByValue(LanguageTable[LanguageTableType], b)
+		if ch then name = name .. ch end
+	end
+	if name == "" then return "?" end
+	return name
+end
+
+--Read one party slot. Returns nil for empty/egg/bad-egg slots, else a table of
+--{ slot, pid, species, hp, area (met location), nick (10 raw charset bytes) }.
+--Reads the 100-byte struct and decrypts it ONCE (called every poll, so kept cheap).
+function SoulReadSlot(slot)
+	local base = gAddress[GameID] and gAddress[GameID].gParty
+	if not base then return nil end
+	local adr = base + 100 * (slot - 1)
+	local pokeflags = emu:read8(adr + 0x13)
+	if (pokeflags & 0x2) == 0 or (pokeflags & 0x1) ~= 0 then return nil end -- no species / bad egg
+	local d = {}
+	for i = 1, 100 do d[i] = emu:read8(adr + (i - 1)) end
+	local checksum = d[0x1D] | (d[0x1E] << 8)
+	local otid = d[0x5] | (d[0x6] << 8) | (d[0x7] << 16) | (d[0x8] << 24)
+	local pid = d[0x1] | (d[0x2] << 8) | (d[0x3] << 16) | (d[0x4] << 24)
+	local data = {}
+	for j = 1, 4 do
+		data[j] = {}
+		for i = 1, 3 do
+			local dl = 0x21 + (i - 1) * 4 + (j - 1) * 12
+			data[j][i] = d[dl] | (d[dl + 1] << 8) | (d[dl + 2] << 16) | (d[dl + 3] << 24)
+		end
+	end
+	data["C"] = checksum
+	local dec = DecryptPokemon(pid, otid, data)
+	if dec["C"] ~= checksum then return nil end       -- empty/garbage slot
+	local species = dec[1][1] & 0xFFFF                 -- Growth substruct
+	if species == 0 then return nil end
+	if ((dec[4][2] >> 30) & 0x1) == 1 then return nil end -- egg
+	local nick = ""
+	for i = 0, 9 do nick = nick .. safeStringChar(d[0x9 + i]) end -- nickname at +0x08 (1-indexed 0x9)
+	return {
+		slot = slot,
+		pid = pid,
+		species = species,
+		hp = d[0x57] | (d[0x58] << 8),                 -- current HP at +0x56
+		area = (dec[4][1] >> 8) & 0xFF,                -- met location = the catch area
+		nick = nick,
+	}
+end
+
+--Primary type of a species, read from the (possibly randomized) base-stat table.
+function SoulPrimaryType(species)
+	local info = gAddress[GameID] and gAddress[GameID].gSpeciesInfo
+	if not info then return nil end
+	return emu:read8(info + 0x1C * species + 6)
+end
+
+function SoulPlayerName(id)
+	local pl = FindPlayerByID(id)
+	if pl and pl:GetNickname() and pl:GetNickname() ~= "" then return pl:GetNickname() end
+	return "Player " .. tostring(id)
+end
+
+--Send a soul packet (SLNK catch / SDIE death) to every other connected player.
+function SoulBroadcast(opcode, area, pid, species, nick)
+	if not (Connected or Hosting) then return end
+	for _, pl in ipairs(players) do
+		local id = pl:GetID()
+		if id ~= PlayerID then
+			local sock = Hosting and pl:GetSocket() or SocketMain
+			if sock then
+				SendSpecialData(sock, opcode, id, PlayerID, { area = area, pid = pid, species = species, nick = nick })
+			end
+		end
+	end
+end
+
+function SoulEnsureArea(area)
+	if not SoulLinks[area] then SoulLinks[area] = {} end
+	return SoulLinks[area]
+end
+
+--Record a catch (mine or a partner's) as the area's link slot. First catch per
+--area per player wins so extra catches never steal the link.
+function SoulRecordCatch(playerID, area, pid, species, nick)
+	local a = SoulEnsureArea(area)
+	if a[playerID] and a[playerID].pid and a[playerID].pid ~= pid and not a[playerID].dead then
+		return
+	end
+	local wasDead = a[playerID] and a[playerID].dead or false
+	a[playerID] = { pid = pid, species = species, nick = nick, dead = wasDead }
+end
+
+--Once I and at least one partner have a catch in an area, announce the link once.
+function SoulTryAnnounce(area)
+	local a = SoulLinks[area]
+	if not a or not a[PlayerID] then return end
+	a.announced = a.announced or {}
+	for id, rec in pairs(a) do
+		if type(id) == "number" and id ~= PlayerID and not a.announced[id] then
+			a.announced[id] = true
+			SoulMsg("Soul-linked (area " .. area .. "): your " .. SoulDecodeNick(a[PlayerID].nick) ..
+				" <-> " .. SoulPlayerName(id) .. "'s " .. SoulDecodeNick(rec.nick))
+		end
+	end
+end
+
+--Warn if two living team members share a primary type (optional rule).
+function SoulCheckTypeClash()
+	if not SoullockeTypeRestriction then return end
+	local seen = {}
+	for slot = 1, 6 do
+		local info = SoulReadSlot(slot)
+		if info and info.hp > 0 then
+			local t = SoulPrimaryType(info.species)
+			if t then
+				if seen[t] then
+					SoulMsg("Type restriction: two " .. (SoulTypeNames[t] or ("type " .. t)) ..
+						"-primary Pokemon on your team (" .. SoulDecodeNick(seen[t]) .. " & " .. SoulDecodeNick(info.nick) .. ").")
+				else
+					seen[t] = info.nick
+				end
+			end
+		end
+	end
+end
+
+--A brand-new catch of mine: record it, apply rule notes, tell partners.
+function SoulLocalCatch(info)
+	local a = SoulLinks[info.area]
+	if a and a[PlayerID] and a[PlayerID].pid and a[PlayerID].pid ~= info.pid and not a[PlayerID].dead then
+		SoulMsg("One-per-area: you already have a catch in area " .. info.area ..
+			" (" .. SoulDecodeNick(a[PlayerID].nick) .. "). This extra catch won't form a new link.")
+	end
+	if SoullockeDupesClause and SoulOwnSpecies[info.species] then
+		SoulMsg("Dupes clause: you already own species #" .. info.species ..
+			" — you may release/skip it and take another encounter in this area.")
+	end
+	SoulOwnSpecies[info.species] = true
+	SoulRecordCatch(PlayerID, info.area, info.pid, info.species, info.nick)
+	SoulAnnounced[info.pid] = true
+	SoulMsg("Caught " .. SoulDecodeNick(info.nick) .. " in area " .. info.area .. ". Remember: nickname everything.")
+	SoulTryAnnounce(info.area)
+	SoulCheckTypeClash()
+	SoulBroadcast("SLNK", info.area, info.pid, info.species, info.nick)
+end
+
+--Faint my linked Pokemon for an area (shared fate from a partner's death).
+function SoulKillLinkedLocal(area)
+	local a = SoulLinks[area]
+	if not a or not a[PlayerID] then return end
+	local targetPid = a[PlayerID].pid
+	if SoulDeadPIDs[targetPid] then return end
+	for slot = 1, 6 do
+		local info = SoulReadSlot(slot)
+		if info and info.pid == targetPid then
+			if info.hp > 0 then emu:write16(gAddress[GameID].gParty + 100 * (slot - 1) + 0x56, 0) end
+			SoulDeadPIDs[targetPid] = true
+			a[PlayerID].dead = true
+			SoulPartyHP[targetPid] = 0
+			SoulMsg("Shared fate: your " .. SoulDecodeNick(a[PlayerID].nick) ..
+				" fell with its soul-link partner. " ..
+				(SoullockeAutoRelease and "Releasing it." or "Box or release it now."))
+			if SoullockeAutoRelease then SoulPendingRelease[targetPid] = true end
+			return
+		end
+	end
+	-- linked mon is not in the party (boxed); we can't touch boxes, so just flag it
+	SoulDeadPIDs[targetPid] = true
+	a[PlayerID].dead = true
+	SoulMsg("Shared fate: your soul-link partner for area " .. area ..
+		" died. Your linked " .. SoulDecodeNick(a[PlayerID].nick) .. " is now dead — release it or keep it boxed.")
+end
+
+--Incoming: a partner caught something (SLNK) or one of their linked mons died (SDIE).
+function SoulHandleRemoteCatch(fromID, area, pid, species, nick)
+	if not Soullocke then return end
+	SoulRecordCatch(fromID, area, pid, species, nick)
+	SoulTryAnnounce(area)
+end
+
+function SoulHandleRemoteDeath(fromID, area, pid)
+	if not Soullocke then return end
+	local a = SoulLinks[area]
+	if a and a[fromID] then a[fromID].dead = true end
+	SoulKillLinkedLocal(area)
+end
+
+--Remove a party slot (auto-release). Only ever called out of battle.
+function SoulReleaseSlot(slot)
+	local base = gAddress[GameID].gParty
+	local cnt = emu:read8(gAddress[GameID].gPartyCount)
+	if not base or slot < 1 or slot > 6 then return end
+	for s = slot, 5 do
+		local dst = base + 100 * (s - 1)
+		local src = base + 100 * s
+		for b = 0, 99 do emu:write8(dst + b, emu:read8(src + b)) end
+	end
+	local last = base + 100 * 5
+	for b = 0, 99 do emu:write8(last + b, 0) end
+	if cnt > 0 then emu:write8(gAddress[GameID].gPartyCount, cnt - 1) end
+	SoulPartyCntPrev = math.max(0, cnt - 1)
+end
+
+function SoulProcessReleases()
+	if LocalInBattle == 1 then return end
+	local any = false
+	for _ in pairs(SoulPendingRelease) do any = true break end
+	if not any then return end
+	for slot = 1, 6 do
+		local info = SoulReadSlot(slot)
+		if info and SoulPendingRelease[info.pid] then
+			SoulReleaseSlot(slot)
+			SoulPendingRelease[info.pid] = nil
+			SoulMsg("Released " .. SoulDecodeNick(info.nick) .. " (shared fate).")
+			return
+		end
+	end
+	SoulPendingRelease = {} -- queued pids no longer in party
+end
+
+--Detect new catches by a rise in party count.
+function SoulCheckCatches()
+	local cnt = emu:read8(gAddress[GameID].gPartyCount)
+	if cnt > SoulPartyCntPrev then
+		for slot = 1, 6 do
+			local info = SoulReadSlot(slot)
+			if info and not SoulAnnounced[info.pid] then
+				SoulLocalCatch(info)
+				SoulPartyHP[info.pid] = info.hp
+			end
+		end
+	end
+	SoulPartyCntPrev = cnt
+end
+
+--Detect faints (edge from alive to 0 HP), enforce no-revive, and propagate death.
+function SoulCheckDeaths()
+	for slot = 1, 6 do
+		local info = SoulReadSlot(slot)
+		if info then
+			-- no-revive: a mon already resolved dead must stay fainted
+			if SoulDeadPIDs[info.pid] and info.hp > 0 then
+				emu:write16(gAddress[GameID].gParty + 100 * (slot - 1) + 0x56, 0)
+				info.hp = 0
+				SoulMsg("No revives: " .. SoulDecodeNick(info.nick) .. " is dead and was re-fainted.")
+			end
+			local prev = SoulPartyHP[info.pid]
+			if prev and prev > 0 and info.hp == 0 and not SoulDeadPIDs[info.pid] then
+				local link = SoulLinks[info.area]
+				SoulDeadPIDs[info.pid] = true
+				if link and link[PlayerID] and link[PlayerID].pid == info.pid then
+					link[PlayerID].dead = true
+					SoulMsg("Your " .. SoulDecodeNick(info.nick) ..
+						" fainted — it is DEAD (Nuzlocke). Notifying soul-link partner(s).")
+					SoulBroadcast("SDIE", info.area, info.pid, nil, nil)
+					if SoullockeAutoRelease then SoulPendingRelease[info.pid] = true end
+				else
+					SoulMsg("Your " .. SoulDecodeNick(info.nick) ..
+						" fainted — it is DEAD (Nuzlocke). Box or release it.")
+				end
+			end
+			SoulPartyHP[info.pid] = info.hp
+		end
+	end
+end
+
+--(Re)send my whole current party's catch list to one player (rebuilds links on
+--connect / reconnect so state survives across sessions with no on-disk save).
+function SoulSyncTo(playerID)
+	if not (Connected or Hosting) then return end
+	local pl = FindPlayerByID(playerID)
+	if not pl then return end
+	local sock = Hosting and pl:GetSocket() or SocketMain
+	if not sock then return end
+	for slot = 1, 6 do
+		local info = SoulReadSlot(slot)
+		if info then
+			SendSpecialData(sock, "SLNK", playerID, PlayerID,
+				{ area = info.area, pid = info.pid, species = info.species, nick = info.nick })
+		end
+	end
+end
+
+--Register the existing party at start-of-session without treating them as new catches.
+function SoulInit()
+	SoulActive = true
+	SoulPartyHP = {}
+	SoulDeadPIDs = {}
+	SoulAnnounced = {}
+	SoulSeenPlayers = {}
+	SoulPendingRelease = {}
+	for slot = 1, 6 do
+		local info = SoulReadSlot(slot)
+		if info then
+			SoulOwnSpecies[info.species] = true
+			SoulAnnounced[info.pid] = true
+			SoulPartyHP[info.pid] = info.hp
+			SoulRecordCatch(PlayerID, info.area, info.pid, info.species, info.nick)
+			if info.hp == 0 then SoulDeadPIDs[info.pid] = true end
+		end
+	end
+	SoulPartyCntPrev = emu:read8(gAddress[GameID].gPartyCount)
+	--Announce any links whose partner catches already arrived before we initialised.
+	for area in pairs(SoulLinks) do
+		if type(area) == "number" then SoulTryAnnounce(area) end
+	end
+	SoulMsg("Handler ready. Dupes clause " .. (SoullockeDupesClause and "ON" or "off") ..
+		", type restriction " .. (SoullockeTypeRestriction and "ON" or "off") ..
+		", auto-release " .. (SoullockeAutoRelease and "ON" or "off") .. ".")
+end
+
+--Per-logic-tick entry point, called from MainLogic.
+function SoulUpdate()
+	if not Soullocke then
+		SoulActive = false
+		return
+	end
+	if not (Connected or Hosting) then return end
+	local ga = gAddress[GameID]
+	if not ga or not ga.gParty or not ga.gPartyCount then return end
+	--Wait until our own player id is assigned (0 until the host hands it out), else
+	--we would key our own catches under 0 and never match them for shared fate.
+	if not FindPlayerByID(PlayerID) then return end
+	if not SoulActive then SoulInit() end
+	for _, pl in ipairs(players) do
+		local id = pl:GetID()
+		if id ~= PlayerID and not SoulSeenPlayers[id] then
+			SoulSeenPlayers[id] = true
+			SoulSyncTo(id)
+		end
+	end
+	--Throttle the (decrypt-heavy) party scan to ~6 times a second.
+	SoulPollCounter = SoulPollCounter + 1
+	if SoulPollCounter < 10 then return end
+	SoulPollCounter = 0
+	SoulCheckCatches()
+	SoulCheckDeaths()
+	SoulProcessReleases()
+end
+-- ===================== end Soullocke handler ========================
+
 function MainLogic()
 	if updateTimers("logic") and (Connected or Hosting) then
 		--GBA-PK: track whether the local player is in a battle (native wild/trainer
@@ -14854,6 +15286,9 @@ function MainLogic()
 		LocalInBattle = (battleFlags ~= 0) and 1 or 0
 		local selfPlayer = FindPlayerByID(PlayerID)
 		if selfPlayer then selfPlayer.Status = LocalInBattle selfPlayer.Skin = LocalSkin end
+
+		--Soullocke: auto-link catches and share fate across players.
+		SoulUpdate()
 				--VARS--
 		local Startvaraddress = gAddress[GameID].gSpecialVar_8000
 		
@@ -15439,6 +15874,63 @@ function setskin(n)
 	console:log("Skin set to graphics id " .. n .. (n == 0 and " (default)" or ""))
 end
 
+--------------------------- Soullocke commands ---------------------------
+local function soulOnOff(cur, v)
+	if v == nil then return not cur end            -- no arg = toggle
+	if v == false or v == 0 or v == "off" then return false end
+	return true
+end
+
+function soullocke(v)
+	Soullocke = soulOnOff(Soullocke, v)
+	if not Soullocke then SoulActive = false end
+	console:log("Soullocke handler " .. (Soullocke and "ON" or "off") ..
+		". (dupes " .. (SoullockeDupesClause and "on" or "off") ..
+		", type-rule " .. (SoullockeTypeRestriction and "on" or "off") ..
+		", auto-release " .. (SoullockeAutoRelease and "on" or "off") .. ")")
+end
+
+function soul_dupes(v)
+	SoullockeDupesClause = soulOnOff(SoullockeDupesClause, v)
+	console:log("Dupes clause " .. (SoullockeDupesClause and "ON" or "off") .. ".")
+end
+
+function soul_typerule(v)
+	SoullockeTypeRestriction = soulOnOff(SoullockeTypeRestriction, v)
+	console:log("Primary-type restriction " .. (SoullockeTypeRestriction and "ON" or "off") .. ".")
+end
+
+function soul_autorelease(v)
+	SoullockeAutoRelease = soulOnOff(SoullockeAutoRelease, v)
+	console:log("Auto-release of dead mons " .. (SoullockeAutoRelease and "ON" or "off") ..
+		(SoullockeAutoRelease and " (dead links are removed from the party)." or " (box dead links yourself)."))
+end
+
+function soul_status()
+	console:log("=== Soullocke status ===")
+	console:log("Handler: " .. (Soullocke and "ON" or "off") ..
+		" | dupes " .. (SoullockeDupesClause and "on" or "off") ..
+		" | type-rule " .. (SoullockeTypeRestriction and "on" or "off") ..
+		" | auto-release " .. (SoullockeAutoRelease and "on" or "off"))
+	if not Soullocke then return end
+	local areas = {}
+	for area, a in pairs(SoulLinks) do
+		if type(area) == "number" then areas[#areas + 1] = area end
+	end
+	table.sort(areas)
+	if #areas == 0 then console:log("No links yet.") return end
+	for _, area in ipairs(areas) do
+		local a = SoulLinks[area]
+		local parts = {}
+		for id, rec in pairs(a) do
+			if type(id) == "number" then
+				parts[#parts + 1] = SoulPlayerName(id) .. ":" .. SoulDecodeNick(rec.nick) .. (rec.dead and "(dead)" or "")
+			end
+		end
+		console:log("  area " .. area .. " -> " .. table.concat(parts, " <-> "))
+	end
+end
+
 function host()
 	if Hosting or Connected then console:log("Already in a session. Use disconnect() first.") return end
 	if not EnableScript then console:log("Script not enabled (unsupported game?).") return end
@@ -15555,7 +16047,8 @@ local MenuUI = pickMenuUI()
 local KEY_A, KEY_B     = 0x1, 0x2
 local KEY_RIGHT, KEY_LEFT, KEY_UP, KEY_DOWN = 0x10, 0x20, 0x40, 0x80
 
-local MenuOptions = { "Host a game", "Join a game", "Set name", "Set skin" }
+local MenuOptions = { "Host a game", "Join a game", "Set name", "Set skin", "Soullocke setup" }
+local SoulMenuSel = 1
 local NameChars = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 --Curated overworld-sprite "skins" per game version (the game's own graphics ids).
@@ -15601,11 +16094,34 @@ function DrawConnectMenu()
 			"Join " .. IPAddress,
 			"Set name (" .. (Nickname ~= "" and Nickname or "auto") .. ")",
 			"Set skin < " .. currentSkinLabel() .. " >",
+			"Soullocke setup " .. (Soullocke and "[ON]" or "[off]"),
 		},
 		selected = MenuSel,
 		footer = {
 			"Port " .. Port .. "   Up to " .. MaxPlayers .. " players.",
 			"Skin: Left/Right to change. Others see it.",
+		},
+	})
+end
+
+local SoulMenuOptions = { "Soullocke", "Dupes clause", "Primary-type rule", "Auto-release dead", "Back" }
+
+function DrawSoulMenu()
+	MenuUI = pickMenuUI()
+	MenuUI:render({
+		title = "===== Soullocke setup =====",
+		subtitle = "A/Left/Right toggle. B: back.",
+		options = {
+			"Soullocke: " .. (Soullocke and "ON" or "off"),
+			"Dupes clause: " .. (SoullockeDupesClause and "ON" or "off"),
+			"Primary-type rule: " .. (SoullockeTypeRestriction and "ON" or "off"),
+			"Auto-release dead: " .. (SoullockeAutoRelease and "ON" or "off"),
+			"Back",
+		},
+		selected = SoulMenuSel,
+		footer = {
+			"Auto-links same-area catches; shared fate on faint.",
+			"Recommended: dupes ON, type-rule off.",
 		},
 	})
 end
@@ -15686,11 +16202,36 @@ local function handleConnectKeys(pressed)
 			MenuActive = false; join()
 		elseif MenuSel == 3 then
 			startNameEditor()
-		else
+		elseif MenuSel == 4 then
 			local n = #currentSkinList()
 			SkinSel = SkinSel + 1; if SkinSel > n then SkinSel = 1 end
 			applySkin(); DrawConnectMenu()
+		else
+			MenuScreen = "soul"; SoulMenuSel = 1; DrawSoulMenu()
 		end
+	end
+end
+
+local function handleSoulKeys(pressed)
+	local function toggleSel()
+		if SoulMenuSel == 1 then Soullocke = not Soullocke; if not Soullocke then SoulActive = false end
+		elseif SoulMenuSel == 2 then SoullockeDupesClause = not SoullockeDupesClause
+		elseif SoulMenuSel == 3 then SoullockeTypeRestriction = not SoullockeTypeRestriction
+		elseif SoulMenuSel == 4 then SoullockeAutoRelease = not SoullockeAutoRelease end
+	end
+	if (pressed & KEY_UP) ~= 0 then
+		SoulMenuSel = SoulMenuSel - 1; if SoulMenuSel < 1 then SoulMenuSel = #SoulMenuOptions end
+		DrawSoulMenu()
+	elseif (pressed & KEY_DOWN) ~= 0 then
+		SoulMenuSel = SoulMenuSel + 1; if SoulMenuSel > #SoulMenuOptions then SoulMenuSel = 1 end
+		DrawSoulMenu()
+	elseif (pressed & (KEY_LEFT | KEY_RIGHT)) ~= 0 then
+		if SoulMenuSel <= 4 then toggleSel(); DrawSoulMenu() end
+	elseif (pressed & KEY_A) ~= 0 then
+		if SoulMenuSel == 5 then MenuScreen = "connect"; DrawConnectMenu()
+		else toggleSel(); DrawSoulMenu() end
+	elseif (pressed & KEY_B) ~= 0 then
+		MenuScreen = "connect"; DrawConnectMenu()
 	end
 end
 
@@ -15734,6 +16275,8 @@ function MenuLogic()
 	if pressed == 0 then return end
 	if MenuScreen == "name" then
 		handleNameKeys(pressed)
+	elseif MenuScreen == "soul" then
+		handleSoulKeys(pressed)
 	else
 		handleConnectKeys(pressed)
 	end
@@ -15760,6 +16303,11 @@ function Help(page)
 		console:log("->who() --List everyone in your session")
 		console:log("->status() --Show connection status")
 		console:log("->disconnect() --Leave the current session")
+		console:log("->soullocke(on) --Toggle the Soullocke handler (auto soul-link + shared fate). Omit arg to toggle")
+		console:log("->soul_dupes(on) --Toggle the dupes clause (recommended on)")
+		console:log("->soul_typerule(on) --Toggle the primary-type restriction (recommended off)")
+		console:log("->soul_autorelease(on) --Toggle auto-removing dead linked mons from the party")
+		console:log("->soul_status() --Show Soullocke state and current soul-links")
 	end
 end
 
