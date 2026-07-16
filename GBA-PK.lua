@@ -9653,7 +9653,21 @@ end
 --overworld graphics id. We draw the facing frame (down/up/left; right reuses the
 --left frame and is flipped by DrawPlayer), and load the sprite's palette into a
 --dedicated OAM slot so its colours are correct. Returns true on success.
-function DrawSkinnedPlayer(tileset, gfxId, frame)
+--GBA-PK: map the mod's pose name to a ROM overworld sprite frame + its idle
+--fallback frame. Gen 3 overworld sprites: 0=face south, 1=north, 2=west; walk
+--steps 3/4 south, 5/6 north, 7/8 west. Right reuses west (DrawPlayer flips it).
+function SkinFrameFromName(name)
+	local dir = 0  -- 0=south(down), 1=north(up), 2=west(left/right)
+	if string.find(name, "Up") then dir = 1
+	elseif string.find(name, "Left") or string.find(name, "Right") then dir = 2 end
+	local step = { [0] = 3, [1] = 5, [2] = 7 }
+	local step2 = { [0] = 4, [1] = 6, [2] = 8 }
+	if string.find(name, "Cycle 1") then return step[dir], dir end
+	if string.find(name, "Cycle 2") then return step2[dir], dir end
+	return dir, dir
+end
+
+function DrawSkinnedPlayer(tileset, gfxId, frame, idleFrame)
 	if not ROMCARD then return false end
 	local ga = gAddress[GameID]
 	if not ga.gGraphicsInfo or not ga.sObjectEventSpritePalettes then return false end
@@ -9663,8 +9677,13 @@ function DrawSkinnedPlayer(tileset, gfxId, frame)
 	local paletteTag = ROMCARD:read16(sprite + 2)
 	local imageTable = ROMCARD:read32(sprite + 28)
 	if imageTable < ROM_LO or imageTable >= ROM_HI then return false end
-	--frame: 0 = face south (down), 1 = face north (up), 2 = face west (left/right, flipped by DrawPlayer)
-	local frameData = ROMCARD:read32(imageTable + 8 * (frame or 0))
+	--frame index into the sprite's image table; fall back to the idle facing frame
+	--if a walk-step frame is missing (some sprites have fewer frames)
+	frame = frame or 0
+	local frameData = ROMCARD:read32(imageTable + 8 * frame)
+	if (frameData < ROM_LO or frameData >= ROM_HI) and idleFrame and idleFrame ~= frame then
+		frameData = ROMCARD:read32(imageTable + 8 * idleFrame)
+	end
 	if frameData < ROM_LO or frameData >= ROM_HI then return false end
 	--write one 16x32 frame (64 words) into this draw-slot's tile bank
 	local addr = 0x6013C00 - (tileset * 0x600)
@@ -9705,18 +9724,16 @@ function CreatePlayer(id, tileset)
 	--which is reliable across poses and games; right reuses the left frame and is flipped.
 	local sp = FindPlayerByID(id)
 	if sp and sp:GetSkin() ~= 0 and (sp.SpriteType == 0 or sp.SpriteType == nil) then
-		local frame = 0
+		local frame, idleFrame = 0, 0
 		local items = drawplayertable[id]
 		if items and items[1] then
 			local tbl = AnimationTable
 			if items[1].Gender == 1 then tbl = tbl + 1 end
 			local st = spriteData[tbl]
 			local name = (st and st[items[1].Animation] and st[items[1].Animation].Animation) or ""
-			if string.find(name, "Up") then frame = 1
-			elseif string.find(name, "Left") or string.find(name, "Right") then frame = 2
-			else frame = 0 end
+			frame, idleFrame = SkinFrameFromName(name)
 		end
-		if DrawSkinnedPlayer(tileset, sp:GetSkin(), frame) then
+		if DrawSkinnedPlayer(tileset, sp:GetSkin(), frame, idleFrame) then
 			return
 		end
 	end
@@ -15456,17 +15473,18 @@ local KEY_RIGHT, KEY_LEFT, KEY_UP, KEY_DOWN = 0x10, 0x20, 0x40, 0x80
 local MenuOptions = { "Host a game", "Join a game", "Set name", "Set skin" }
 local NameChars = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
---Curated overworld-sprite "skins" per game family (the game's own graphics ids).
+--Curated overworld-sprite "skins" per game version (the game's own graphics ids).
 --0 = your normal protagonist. Ids that don't exist on a game safely fall back to
---the protagonist, so this list can be tuned freely.
+--the protagonist, so these lists can be tuned freely.
 local SkinSets = {
-	FRLG = { 0, 5, 7, 9, 16, 21 },
-	RSE  = { 0, 5, 7, 9, 16, 25 },
+	FRLG = { 0, 5, 7, 9, 16, 21 },        -- FireRed / LeafGreen (verified in-game)
+	E    = { 0, 6, 7, 9, 10, 13, 14 },    -- Emerald (verified in-game)
+	RS   = { 0, 6, 7, 9, 10, 13, 14 },    -- Ruby / Sapphire (same OW sprite ids as Emerald)
 }
 local SkinSel = 1  -- index into the current game's skin list
 
 local function currentSkinList()
-	local t = (GameID and gAddress[GameID] and gAddress[GameID].sGameType) or "FRLG"
+	local t = (GameID and gAddress[GameID] and gAddress[GameID].sGameVersion) or "FRLG"
 	return SkinSets[t] or SkinSets.FRLG
 end
 
