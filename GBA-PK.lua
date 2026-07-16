@@ -1,7 +1,18 @@
-local IPAddress, Port = "127.0.0.1", 4096
-local MaxPlayers = 8
-local ServerType = "c" --can change to "h"/"s" for host, "c" for client
-local Nickname = "" --this can be up to 10 utf8 chars long.
+-- ========================= GBA-PK MULTIPLAYER =========================
+-- Unified script: ONE file for both hosting and joining.
+--   * Leave Role = "menu" to choose Host/Join in-game with the D-pad, or
+--   * set Role = "host" / "join" below, or
+--   * type host() / join("IP address") in mGBA's scripting box.
+-- Type help() in the scripting box for the full command list.
+-- ----------------------------------------------------------------------
+local Role       = "menu"        -- "menu", "host", or "join"
+local Nickname   = ""            -- up to 10 chars. Blank = use your in-game name.
+local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
+local Port       = 4096          -- must be the same for everyone in the session
+local MaxPlayers = 4             -- players per session (supports up to 8)
+-- ======================================================================
+local IPAddress  = ServerIP      -- internal alias (do not edit)
+local ServerType = "c"           -- internal, derived from Role/commands
 local Experimental_Features = false --set this to true to enable experimental NPC feature. Currently is only for testing
 
 --Romhack support (experimental). Most Gen 3 romhacks are built on top of an official base
@@ -125,6 +136,9 @@ local IDsToDraw = 0
 local ObjectLoaded = false
 local ObjectInUse = 0
 local NativeLua = false
+local MenuActive = false     -- GBA-PK: connection menu state
+local MenuSel = 1
+local MenuPrevKeys = 0
 local MainBattleFunc_Saved = 0
 
 local PositionData = {
@@ -10168,11 +10182,7 @@ function StartScript()
 	end
 		
 	if ConsoleForText == nil then
-		if ServerType == "h" or ServerType == "s" or ServerType == "H" or ServerType == "S" then
-			ConsoleForText = console:createBuffer("GBA-PK SERVER")
-		else
-			ConsoleForText = console:createBuffer("GBA-PK CLIENT")
-		end
+		ConsoleForText = console:createBuffer("GBA-PK")
 		
 		ConsoleForText:clear()
 		ConsoleForText:moveCursor(0,0)
@@ -10194,13 +10204,12 @@ function StartScript()
 			end
 		end
 		if #players < 1 then
-			if ServerType == "h" or ServerType == "s" or ServerType == "H" or ServerType == "S" then
-				CreateNetwork()
-			elseif ServerType == "c" then
-				ConnectNetwork()
+			if Role == "host" or Role == "Host" or Role == "HOST" then
+				host()
+			elseif Role == "join" or Role == "Join" or Role == "JOIN" then
+				join()
 			else
-				--If set to anything other than h or c make it client
-				ConnectNetwork()
+				ShowConnectMenu()
 			end
 		end
 	end
@@ -15187,6 +15196,121 @@ function PokemonCap(num)
 	end
 end
 
+-- ===================== GBA-PK connection UI ==========================
+-- Simple commands you can type in mGBA's scripting box, plus a D-pad
+-- driven Host/Join menu shown in the GBA-PK console panel on startup.
+
+function setname(name)
+	if type(name) ~= "string" then console:log('Usage: setname("YourName")') return end
+	Nickname = utf8_cut(name, 10)
+	console:log("Nickname set to " .. Nickname)
+end
+
+function host()
+	if Hosting or Connected then console:log("Already in a session. Use disconnect() first.") return end
+	if not EnableScript then console:log("Script not enabled (unsupported game?).") return end
+	Role = "host"
+	ServerType = "h"
+	MenuActive = false
+	CreateNetwork()
+	console:log("Hosting on port " .. Port .. ". Tell friends to join your IP address.")
+end
+
+function join(ip)
+	if Hosting or Connected then console:log("Already in a session. Use disconnect() first.") return end
+	if not EnableScript then console:log("Script not enabled (unsupported game?).") return end
+	if type(ip) == "string" and ip ~= "" then IPAddress = ip end
+	Role = "join"
+	ServerType = "c"
+	MenuActive = false
+	console:log("Connecting to " .. IPAddress .. ":" .. Port .. " ...")
+	ConnectNetwork()
+end
+
+function who()
+	if #players == 0 then console:log("Not connected. No players.") return end
+	console:log("Players in session (" .. #players .. "/" .. MaxPlayers .. "):")
+	for _, p in ipairs(players) do
+		local you = (p:GetID() == PlayerID) and " (you)" or ""
+		console:log("  [" .. p:GetID() .. "] " .. tostring(p:GetNickname()) .. you)
+	end
+end
+
+function status()
+	local role = Hosting and "HOST" or (Connected and "JOINED" or "not connected")
+	console:log("GBA-PK status: " .. role)
+	console:log("  Game: " .. tostring(GameID) .. "   Name: " .. (Nickname ~= "" and Nickname or "(in-game name)"))
+	console:log("  IP: " .. IPAddress .. "   Port: " .. Port .. "   Players: " .. #players .. "/" .. MaxPlayers)
+end
+
+function disconnect()
+	if not (Hosting or Connected) then console:log("Not connected.") return end
+	for _, p in ipairs(players) do
+		local sock = p:GetSocket()
+		if sock and sock ~= SocketMain then pcall(function() sock:close() end) end
+	end
+	if SocketMain then pcall(function() SocketMain:close() end) end
+	Hosting = false
+	Connected = false
+	players = {}
+	PlayerID = 0
+	SocketMain = socket:tcp()
+	if ConsoleForText then ConsoleForText:clear() end
+	console:log("Disconnected. Type host() or join(\"IP\") to start again.")
+	ShowConnectMenu()
+end
+
+-- D-pad Host/Join menu shown in the GBA-PK console panel ---------------
+local MenuOptions = { "Host a game", "Join a game" }
+
+function DrawConnectMenu()
+	if not ConsoleForText then return end
+	ConsoleForText:clear()
+	ConsoleForText:moveCursor(0, 0)
+	ConsoleForText:print("======= GBA-PK Multiplayer =======")
+	ConsoleForText:moveCursor(0, 1)
+	ConsoleForText:print("D-pad Up/Down to move, press A to pick.")
+	for i = 1, #MenuOptions do
+		ConsoleForText:moveCursor(0, 2 + i)
+		local label = MenuOptions[i]
+		if label == "Join a game" then label = "Join " .. IPAddress end
+		local prefix = (i == MenuSel) and " > " or "   "
+		ConsoleForText:print(prefix .. label .. "                        ")
+	end
+	ConsoleForText:moveCursor(0, 4 + #MenuOptions)
+	ConsoleForText:print("Name: " .. (Nickname ~= "" and Nickname or "(in-game name)") .. "   Port: " .. Port .. "     ")
+	ConsoleForText:moveCursor(0, 5 + #MenuOptions)
+	ConsoleForText:print("Or type host() / join(\"IP\") in this box.")
+end
+
+function ShowConnectMenu()
+	if Hosting or Connected then return end
+	MenuActive = true
+	MenuSel = 1
+	MenuPrevKeys = emu and emu:getKeys() or 0
+	DrawConnectMenu()
+end
+
+function MenuLogic()
+	if not MenuActive then return end
+	if Hosting or Connected then MenuActive = false return end
+	local k = emu:getKeys()
+	local pressed = k & (~MenuPrevKeys)
+	MenuPrevKeys = k
+	if (pressed & 0x40) ~= 0 then            -- Up
+		MenuSel = MenuSel - 1
+		if MenuSel < 1 then MenuSel = #MenuOptions end
+		DrawConnectMenu()
+	elseif (pressed & 0x80) ~= 0 then        -- Down
+		MenuSel = MenuSel + 1
+		if MenuSel > #MenuOptions then MenuSel = 1 end
+		DrawConnectMenu()
+	elseif (pressed & 0x1) ~= 0 then         -- A button
+		MenuActive = false
+		if MenuSel == 1 then host() else join() end
+	end
+end
+
 function help(page)
 	Help(page)
 end
@@ -15202,6 +15326,12 @@ function Help(page)
 		console:log("->interact(x) --Interact with player *x")
 		console:log("->levelcap(*x) --Set the level cap for flag LEVEL_CAP to *x level. if 0, default to 50")
 		console:log("->pokemoncap(*x) --Set the pokemon cap for flag POKEMON_CAP to *x amount. if 0, default to 3")
+		console:log("->host() --Host a game so others can join your IP")
+		console:log("->join(\"IP\") --Join a game at IP address. Omit IP to use the configured one")
+		console:log("->setname(\"Name\") --Set your nickname (up to 10 chars)")
+		console:log("->who() --List everyone in your session")
+		console:log("->status() --Show connection status")
+		console:log("->disconnect() --Leave the current session")
 	end
 end
 
@@ -15259,11 +15389,7 @@ if NativeLua then
 else
 	SocketMain = socket:tcp()
 
-	if ServerType == "h" then
-		console:log("Started GBA-PK_Server.lua")
-	else
-		console:log("Started GBA-PK_Client.lua")
-	end
+	console:log("Started GBA-PK. Type help() for commands, or use the in-game menu.")
 	if not (emu == nil) then
 		StartScript()
 	end
@@ -15274,6 +15400,7 @@ else
 	callbacks:add("frame", MainLogic)
 	callbacks:add("frame", Connection)
 	callbacks:add("frame", Render)
+	callbacks:add("frame", MenuLogic)
 
 
 	callbacks:add("keysRead", Interaction)

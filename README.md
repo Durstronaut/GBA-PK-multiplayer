@@ -37,11 +37,48 @@ Most Gen 3 romhacks are built on top of an official base game (usually FireRed o
 
 Romhacks that relocate RAM structures (for example, hacks that move the save blocks) may still need custom addresses; the override assumes the base game's memory layout.
 
-## Usage
+## Getting started (up to 4 players)
 
-1. Open your Gen 3 Pokémon ROM in mGBA.
-2. Load `GBA-PK_Client ALPHA 4.lua` (to join a server) or `GBA-PK_Server ALPHA 4.lua` (to host) via **Tools → Scripting**.
-3. Configure the `IPAddress`/`Port` (and, for romhacks, `RomHackBaseGame`) at the top of the file if needed.
+Everyone uses the **same single file**, `GBA-PK.lua` — there is no longer a separate
+client and server script.
+
+1. Open your Gen 3 Pokémon ROM in mGBA (0.10.x).
+2. Load **`GBA-PK.lua`** via **Tools → Scripting → Load script…**
+3. A small menu appears in the GBA-PK console panel. Use the **D-pad Up/Down** and press
+   **A** to choose:
+   - **Host a game** — others connect to your IP address.
+   - **Join a game** — connect to the host's IP (set `ServerIP` in the config, or use
+     `join("their.ip.address")`).
+
+That's it. Up to 4 players (host + 3) can see, walk around, trade and battle with each
+other. Everyone must use the same port (default `4096`); the host may need to port-forward
+it for players over the internet.
+
+### Configuration
+
+The only things most people touch are at the very top of `GBA-PK.lua`:
+
+```lua
+local Role       = "menu"        -- "menu" (choose in-game), "host", or "join"
+local Nickname   = ""            -- up to 10 chars. Blank = use your in-game name.
+local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
+local Port       = 4096          -- must be the same for everyone
+local MaxPlayers = 4             -- players per session (supports up to 8)
+```
+
+### Commands
+
+You can also drive everything by typing in mGBA's scripting box (type `help()` for the
+full list):
+
+| Command | What it does |
+|---------|--------------|
+| `host()` | Start hosting a game |
+| `join("IP")` | Join a game at that IP (omit `IP` to use the configured one) |
+| `setname("Name")` | Set your nickname |
+| `who()` | List everyone in your session |
+| `status()` | Show connection status |
+| `disconnect()` | Leave the current session |
 
 ## Links
 
