@@ -6,10 +6,12 @@
   - The panel background could disappear behind the text while navigating the menu.
     `render()` now fully clears the layer and repaints the panel opaque (blend off) before
     drawing the text (blend on), so every redraw lands a solid background.
-  - After choosing an option the menu could slide below the game window and become
-    un-interactable. Positioning and compositing now run from a per-frame callback keyed off
-    a visibility flag, decoupled from `render()`, so the overlay can never get stranded
-    off-screen while the menu is open.
+  - After choosing an option (e.g. Host) the menu didn't disappear — it dropped into the
+    black border below the game. The overlay is now hidden by **clearing its layer to
+    transparent** rather than moving it off-screen: mGBA composites the overlay across the
+    whole window, so a layer pushed past the 160px screen height lands in the letterbox
+    instead of vanishing. The layer stays pinned at the top-left of the game and is
+    re-composited each frame, so showing/hiding is just draw-panel vs. clear-to-transparent.
 
 ## v1.1.0
 

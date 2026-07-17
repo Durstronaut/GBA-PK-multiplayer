@@ -16121,12 +16121,17 @@ function ScreenMenuUI:_setup()
 	end)
 	self._ok = ok and self._layer ~= nil and self._painter ~= nil
 	if not self._ok then self._layer = nil self._painter = nil return false end
-	-- Start hidden (off-screen), then drive position + compositing every frame.
-	-- Keeping the layer positioned/updated from a frame callback (instead of only
-	-- at the end of render) means the overlay can never get "stuck" off-screen if a
-	-- draw call ever throws, and guarantees it composites over the game each frame.
-	pcall(function() self._layer:setPosition(0, self._sh + 40) end)
+	-- The overlay layer stays pinned at the top-left of the game (0,0) for its whole
+	-- life. We show/hide it by drawing the panel vs. clearing the image to fully
+	-- transparent — NOT by moving it off-screen. mGBA composites the overlay across
+	-- the whole window (the game is letterboxed inside it), so a layer moved past the
+	-- 160px screen height doesn't disappear, it just lands in the black border below
+	-- the game. Clearing to transparent is the only reliable way to hide it.
+	pcall(function() self._layer:setPosition(0, 0) end)
+	self:_clear()   -- start hidden
 	if callbacks then
+		-- Re-composite every frame so the current image (panel or cleared) always
+		-- shows, independent of when render()/hide() last ran.
 		callbacks:add("frame", function() ScreenMenuUI:_tick() end)
 	end
 	return self._ok
@@ -16134,20 +16139,26 @@ end
 function ScreenMenuUI:available()
 	return self:_setup()
 end
+function ScreenMenuUI:_clear()
+	if not self._painter then return end
+	pcall(function()
+		self._painter:setBlend(false)
+		self._painter:setFill(true)
+		self._painter:setStrokeWidth(0)
+		self._painter:setFillColor(0x00000000)
+		self._painter:drawRectangle(0, 0, self._sw, self._sh)
+	end)
+end
 function ScreenMenuUI:_tick()
 	if not self._ok or not self._layer then return end
 	pcall(function()
-		if self._visible then
-			self._layer:setPosition(0, 0)
-		else
-			self._layer:setPosition(0, self._sh + 40)
-		end
+		self._layer:setPosition(0, 0)
 		self._layer:update()
 	end)
 end
 function ScreenMenuUI:hide()
 	self._visible = false
-	if self._layer then pcall(function() self._layer:setPosition(0, self._sh + 40) end) end
+	self:_clear()   -- transparent image = nothing shows over the game
 end
 function ScreenMenuUI:render(screen)
 	if not self._ok then return end
