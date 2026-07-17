@@ -10,7 +10,7 @@ local Nickname   = ""            -- up to 10 chars. Blank = use your in-game nam
 local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
-local ScriptVersion = "1.1.1"    -- GBA-PK release version
+local ScriptVersion = "1.2.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -15923,10 +15923,30 @@ end
 -- Simple commands you can type in mGBA's scripting box, plus a D-pad
 -- driven Host/Join menu shown in the GBA-PK console panel on startup.
 
+--GBA-PK: push the local player's current Nickname to everyone in the session.
+--Skins ride along in the normal per-frame position packet, but the nickname is
+--only exchanged on demand (a NICK packet), so a mid-session rename needs this.
+--Host is always PlayerID 1, so a client just sends its NICK to id 1 and the host
+--relays it to the rest (the same path used during the join handshake).
+function BroadcastNickname()
+	local sp = FindPlayerByID(PlayerID)
+	if sp then sp.Nickname = Nickname end   -- CreateSpecialPacket reads this field
+	if Hosting then
+		for i, player in ipairs(players) do
+			if player:GetID() ~= PlayerID then
+				CreateSpecialPacket(player:GetSocket(), "NICK", player:GetID(), PlayerID)
+			end
+		end
+	elseif Connected and SocketMain then
+		SendSpecialData(SocketMain, "NICK", 1, PlayerID)
+	end
+end
+
 function setname(name)
 	if type(name) ~= "string" then console:log('Usage: setname("YourName")') return end
 	Nickname = utf8_cut(name, 10)
 	console:log("Nickname set to " .. Nickname)
+	if Hosting or Connected then BroadcastNickname() end
 end
 
 --GBA-PK: set your overworld skin to a raw graphics id (0 = default protagonist).
@@ -16242,6 +16262,7 @@ local KEY_ALL = 0x3FF  -- A,B,Select,Start,Right,Left,Up,Down,R,L
 
 local MenuOptions = { "Host a game", "Join a game", "Set name", "Set skin", "Soullocke setup" }
 local SoulMenuSel = 1
+local SessionMenuSel = 1   -- selection in the in-session (mid-game) menu
 local NameChars = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
 
 --Curated overworld-sprite "skins" per game version (the game's own graphics ids).
@@ -16297,6 +16318,28 @@ function DrawConnectMenu()
 	})
 end
 
+-- In-session menu (shown while hosting/connected): change your name or skin
+-- without leaving the game, or disconnect. Host/Join/Soullocke setup don't apply
+-- mid-session, so they're intentionally absent here.
+function DrawSessionMenu()
+	MenuUI = pickMenuUI()
+	MenuUI:render({
+		title = "===== GBA-PK (in session) =====",
+		subtitle = "Change your look/name without leaving the game.",
+		options = {
+			"Set name (" .. (Nickname ~= "" and Nickname or "auto") .. ")",
+			"Set skin < " .. currentSkinLabel() .. " >",
+			"Disconnect",
+			"Close",
+		},
+		selected = SessionMenuSel,
+		footer = {
+			"Skin: Left/Right to change. Everyone sees it live.",
+			"Players: " .. #players .. "/" .. MaxPlayers .. ".  Select closes.",
+		},
+	})
+end
+
 local SoulMenuOptions = { "Soullocke", "Dupes clause", "Primary-type rule", "Auto-release dead", "Back" }
 
 function DrawSoulMenu()
@@ -16345,6 +16388,15 @@ function ShowConnectMenu()
 	MenuSel = 1
 	MenuPrevKeys = emu and emu:getKeys() or 0
 	DrawConnectMenu()
+end
+
+function ShowSessionMenu()
+	if not (Hosting or Connected) then return end
+	MenuActive = true
+	MenuScreen = "session"
+	SessionMenuSel = 1
+	MenuPrevKeys = emu and emu:getKeys() or 0
+	DrawSessionMenu()
 end
 
 local function startNameEditor()
@@ -16448,14 +16500,54 @@ local function handleNameKeys(pressed)
 			table.remove(NameBuf)
 			if NamePos > #NameBuf then NamePos = #NameBuf end
 			DrawNameEditor()
+		elseif Hosting or Connected then
+			MenuScreen = "session"; DrawSessionMenu()
 		else
 			MenuScreen = "connect"; DrawConnectMenu()
 		end
 	elseif (pressed & KEY_A) ~= 0 then
 		local nm = string.gsub(nameString(), "%s+$", "")
 		if nm ~= "" then Nickname = utf8_cut(nm, 10) end
-		MenuScreen = "connect"
-		DrawConnectMenu()
+		if Hosting or Connected then
+			-- mid-session rename: tell the other players so your label updates for them
+			BroadcastNickname()
+			MenuScreen = "session"; DrawSessionMenu()
+		else
+			MenuScreen = "connect"; DrawConnectMenu()
+		end
+	end
+end
+
+local function handleSessionKeys(pressed)
+	local function cycleSkin(dir)
+		local n = #currentSkinList()
+		SkinSel = SkinSel + dir
+		if SkinSel < 1 then SkinSel = n elseif SkinSel > n then SkinSel = 1 end
+		applySkin()   -- LocalSkin change rides out in the normal position packet
+		DrawSessionMenu()
+	end
+	if (pressed & KEY_UP) ~= 0 then
+		SessionMenuSel = SessionMenuSel - 1; if SessionMenuSel < 1 then SessionMenuSel = 4 end
+		DrawSessionMenu()
+	elseif (pressed & KEY_DOWN) ~= 0 then
+		SessionMenuSel = SessionMenuSel + 1; if SessionMenuSel > 4 then SessionMenuSel = 1 end
+		DrawSessionMenu()
+	elseif (pressed & KEY_LEFT) ~= 0 then
+		if SessionMenuSel == 2 then cycleSkin(-1) end
+	elseif (pressed & KEY_RIGHT) ~= 0 then
+		if SessionMenuSel == 2 then cycleSkin(1) end
+	elseif (pressed & KEY_A) ~= 0 then
+		if SessionMenuSel == 1 then
+			startNameEditor()
+		elseif SessionMenuSel == 2 then
+			cycleSkin(1)
+		elseif SessionMenuSel == 3 then
+			MenuActive = false; HideMenuOverlay(); disconnect()
+		else
+			MenuActive = false; HideMenuOverlay()
+		end
+	elseif (pressed & KEY_B) ~= 0 then
+		MenuActive = false; HideMenuOverlay()
 	end
 end
 
@@ -16468,18 +16560,15 @@ end
 -- focus the game window to use it.)
 function MenuLogic()
 	if not emu then return end
-	if Hosting or Connected then
-		if MenuActive then MenuActive = false; HideMenuOverlay() end
-		MenuPrevKeys = emu:getKeys()
-		return
-	end
 	local k = emu:getKeys()
 	local pressed = k & (~MenuPrevKeys)
 	MenuPrevKeys = k
 	if not MenuActive then
-		-- Not in the menu: let the game have its input, but Select (re)opens the menu.
+		-- Not in the menu: let the game have its input, but Select opens the menu.
+		-- Which menu depends on state: the in-session menu (name/skin/disconnect)
+		-- once you're hosting/connected, otherwise the pre-connection connect menu.
 		if (pressed & KEY_SELECT) ~= 0 and EnableScript then
-			ShowConnectMenu()
+			if Hosting or Connected then ShowSessionMenu() else ShowConnectMenu() end
 			emu:clearKeys(KEY_SELECT)
 		end
 		return
@@ -16497,6 +16586,8 @@ function MenuLogic()
 		handleNameKeys(pressed)
 	elseif MenuScreen == "soul" then
 		handleSoulKeys(pressed)
+	elseif MenuScreen == "session" then
+		handleSessionKeys(pressed)
 	else
 		handleConnectKeys(pressed)
 	end

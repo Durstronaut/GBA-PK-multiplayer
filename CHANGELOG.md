@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.0
+
+- **In-session menu.** Press **Select** while hosting or connected to open a new in-game menu
+  with **Set name**, **Set skin** and **Disconnect** — so you can change how you look or what
+  you're called without leaving the session. (Host/Join/Soullocke setup only apply before you
+  connect, so they're not shown here.) Skin changes ride out in the normal position packet, so
+  everyone sees your new look live; name changes send a nickname update to the other players.
+  `setname()` in the scripting box now also broadcasts mid-session.
+
 ## v1.1.1
 
 - **On-screen menu fixes (mGBA 0.11+).** Two bugs in the v1.1.0 on-screen overlay:
