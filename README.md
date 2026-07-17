@@ -174,7 +174,3 @@ the **same base game** (areas are matched by the game's met-location ids).
   keep links in sync; it doesn't move Pokémon in your PC for you (writing PC storage safely
   across every ROM and romhack isn't guaranteed), so you perform the box moves yourself when
   prompted. A boxed partner of a fallen Pokémon is likewise flagged for you to release.
-
-## Support
-
-If you'd like to support the project: https://ko-fi.com/ynnead
