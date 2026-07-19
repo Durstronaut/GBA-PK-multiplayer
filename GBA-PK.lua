@@ -10,7 +10,7 @@ local Nickname   = ""            -- up to 10 chars. Blank = use your in-game nam
 local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
-local ScriptVersion = "1.2.0"    -- GBA-PK release version
+local ScriptVersion = "1.2.2"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -10543,8 +10543,10 @@ function ConnectNetwork()
 			RestartScript = true
 			EnableScript = false
 			ConsoleForText:clear()
-			console:log("Error connecting. Error type: " .. errorMessage)
-			console:log("Please restart the script")
+			console:log("Could not connect to " .. IPAddress .. ":" .. Port .. ". Reason: " .. tostring(errorMessage))
+			console:log("Check: the host's PUBLIC IP is set (not their 192.168.x LAN IP), the host")
+			console:log("port-forwarded TCP " .. Port .. " to their PC, and their firewall allows mGBA.")
+			console:log("Please restart the script to try again.")
 		end
 	end
 end
@@ -10629,6 +10631,9 @@ function Connection()
 		if Hosting then
 			local PlayerData = SocketMain:accept()
 			if (PlayerData ~= nil) then
+				if DebugMessages.Unable_To_Connect then
+					console:log("[net] a client reached the host (TCP accepted) — port forward is working")
+				end
 				AddTempPlayer(PlayerData)
 			end
 			if #temp_players > 0 then
@@ -16064,6 +16069,24 @@ function status()
 	console:log("  IP: " .. IPAddress .. "   Port: " .. Port .. "   Players: " .. #players .. "/" .. MaxPlayers)
 end
 
+-- Turn verbose network logging on/off at runtime — handy for diagnosing a failed
+-- join. Omit the arg to toggle. When on, the HOST logs each incoming connection
+-- ("[net] a client reached the host") so you can tell whether the port forward is
+-- delivering connections at all, and both sides log the join handshake.
+function netlog(on)
+	if on == nil then on = not DebugMessages.Unable_To_Connect end
+	on = on and true or false
+	DebugMessages.Unable_To_Connect = on
+	DebugMessages.Network = on
+	DebugMessages.Nickname = on
+	console:log("Verbose network logging " .. (on and "ON" or "off") .. ".")
+	if on then
+		console:log("  HOST: expect '[net] a client reached the host' when someone connects.")
+		console:log("  JOINER: expect 'Game found' on success, or 'Error connecting' with the reason.")
+		console:log("  No host message when a joiner tries = the connection isn't reaching you (port forward / firewall).")
+	end
+end
+
 function disconnect()
 	if not (Hosting or Connected) then console:log("Not connected.") return end
 	for _, p in ipairs(players) do
@@ -16692,6 +16715,7 @@ function Help(page)
 		console:log("->setname(\"Name\") --Set your nickname (up to 10 chars)")
 		console:log("->who() --List everyone in your session")
 		console:log("->status() --Show connection status")
+		console:log("->netlog(on) --Toggle verbose network logging to diagnose a failed join")
 		console:log("->disconnect() --Leave the current session")
 		console:log("->soullocke(on) --Toggle the Soullocke handler (auto soul-link + shared fate). Omit arg to toggle")
 		console:log("->soul_dupes(on) --Toggle the dupes clause (recommended on)")
