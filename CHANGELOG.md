@@ -1,15 +1,26 @@
 # Changelog
 
+## v1.2.0
+
+- **In-session menu.** Press **Select** while hosting or connected to open a new in-game menu
+  with **Set name**, **Set skin** and **Disconnect** — so you can change how you look or what
+  you're called without leaving the session. (Host/Join/Soullocke setup only apply before you
+  connect, so they're not shown here.) Skin changes ride out in the normal position packet, so
+  everyone sees your new look live; name changes send a nickname update to the other players.
+  `setname()` in the scripting box now also broadcasts mid-session.
+
 ## v1.1.1
 
 - **On-screen menu fixes (mGBA 0.11+).** Two bugs in the v1.1.0 on-screen overlay:
   - The panel background could disappear behind the text while navigating the menu.
     `render()` now fully clears the layer and repaints the panel opaque (blend off) before
     drawing the text (blend on), so every redraw lands a solid background.
-  - After choosing an option the menu could slide below the game window and become
-    un-interactable. Positioning and compositing now run from a per-frame callback keyed off
-    a visibility flag, decoupled from `render()`, so the overlay can never get stranded
-    off-screen while the menu is open.
+  - After choosing an option (e.g. Host) the menu didn't disappear — it dropped into the
+    black border below the game. The overlay is now hidden by **clearing its layer to
+    transparent** rather than moving it off-screen: mGBA composites the overlay across the
+    whole window, so a layer pushed past the 160px screen height lands in the letterbox
+    instead of vanishing. The layer stays pinned at the top-left of the game and is
+    re-composited each frame, so showing/hiding is just draw-panel vs. clear-to-transparent.
 
 ## v1.1.0
 

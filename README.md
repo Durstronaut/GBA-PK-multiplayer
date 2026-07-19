@@ -69,6 +69,11 @@ That's it. Up to 4 players (host + 3) can see, walk around, trade and battle wit
 other in the overworld. Everyone must use the same port (default `4096`); the host may
 need to port-forward it for players over the internet.
 
+**Changing your name or skin mid-session.** Once you're hosting or connected, pressing
+**Select** opens an in-session menu with **Set name**, **Set skin** and **Disconnect** — so
+you can re-style or rename yourself without leaving the game. Skin changes appear to everyone
+live; a name change is sent out to the other players too.
+
 ### Seeing other players
 
 - **Skins animate.** Other players' chosen overworld skins walk with a full walk
