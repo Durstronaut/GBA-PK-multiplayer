@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.2.3
+
+- **Fix garbled packets / random disconnects over the internet.** Network packets are a fixed
+  64 bytes, but the receiver treated each socket read as one whole packet. TCP is a byte
+  stream, so on slower/real internet links a 64-byte packet often arrives split across reads
+  (or several arrive coalesced). A single split packet permanently mis-aligned the stream, so
+  every packet after it failed the validator ("got unverified packet") and the desync led to
+  dropped connections — often on map changes, which burst several packets at once. The receiver
+  now buffers incoming bytes per connection and dispatches only complete 64-byte frames,
+  keeping any partial tail for the next read. LAN/localhost play was unaffected (packets
+  arrived whole there); this fixes internet play.
+
 ## v1.2.2
 
 - **Connection diagnostics.** New `netlog(on)` command toggles verbose network logging at
