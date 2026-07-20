@@ -10,7 +10,7 @@ local Nickname   = ""            -- up to 10 chars. Blank = use your in-game nam
 local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
-local ScriptVersion = "1.2.2"    -- GBA-PK release version
+local ScriptVersion = "1.2.3"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -147,6 +147,7 @@ local Packet = ""
 local PlayerID = 0
 local players = {}
 local temp_players = {}
+local RecvBuffers = {}       -- GBA-PK: per-socket receive buffers for 64-byte frame reassembly
 local NPCs = {}
 
 --Variables from the game. Also don't touch
@@ -10555,6 +10556,7 @@ function Disconnect()
 	SocketMain:close()
 	PlayerID = 0
 	players = {}
+	RecvBuffers = {}
 	UpdatePlayerConsole()
 	ConsoleForText:moveCursor(0,3)
 	console:log("You have timed out")
@@ -10845,8 +10847,22 @@ function ReceiveData(SocketMain)
 	
 	if EnableScript == true then
 		local Network_Count = 0
-		while (SocketMain:hasdata()) do
-			local ReadData = SocketMain:receive(64)
+		-- TCP is a byte stream, not messages: a 64-byte packet can arrive split across
+		-- reads (common on slower/real internet links) or several coalesced together.
+		-- Drain everything available into this socket's buffer, then dispatch only whole
+		-- 64-byte frames and keep any partial tail for next time. Without this, one split
+		-- packet mis-aligns the stream and every packet after it reads as "unverified".
+		local __buf = RecvBuffers[SocketMain] or ""
+		while SocketMain:hasdata() do
+			local __chunk = SocketMain:receive(64)
+			if not __chunk or __chunk == "" then break end
+			__buf = __buf .. __chunk
+		end
+		RecvBuffers[SocketMain] = __buf
+		while (#__buf >= 64) do
+			local ReadData = string.sub(__buf, 1, 64)
+			__buf = string.sub(__buf, 65)
+			RecvBuffers[SocketMain] = __buf
 			if ReadData == nil then
 				break
 			else
@@ -16097,6 +16113,7 @@ function disconnect()
 	Hosting = false
 	Connected = false
 	players = {}
+	RecvBuffers = {}
 	PlayerID = 0
 	SocketMain = socket:tcp()
 	if ConsoleForText then ConsoleForText:clear() end
