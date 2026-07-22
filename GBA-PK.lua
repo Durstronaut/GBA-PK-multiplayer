@@ -10,7 +10,7 @@ local Nickname   = ""            -- up to 10 chars. Blank = use your in-game nam
 local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
-local ScriptVersion = "1.2.3"    -- GBA-PK release version
+local ScriptVersion = "1.3.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -138,6 +138,7 @@ local RestartScript = false
 local EnableScript = false
 local Hosting = false
 local Connected = false
+ServerIsDedicated = false    -- GBA-PK: true when joined to a standalone GBA-PK-Server.lua (host is not a player)
 local ConnectType = 0
 local NoPlayers = 0
 local GameID
@@ -10557,6 +10558,7 @@ function Disconnect()
 	PlayerID = 0
 	players = {}
 	RecvBuffers = {}
+	ServerIsDedicated = false
 	UpdatePlayerConsole()
 	ConsoleForText:moveCursor(0,3)
 	console:log("You have timed out")
@@ -10913,13 +10915,23 @@ function ReceiveData(SocketMain)
 				elseif Connected then
 					if packet.RequestType == "STRT" then
 						if DebugMessages.Unable_To_Connect then console:log("RECEIVED STRT") end
-						--Add host
-						AddPlayer(1, SocketMain, packet.Nickname, packet.GameID, packet.CurrentX, packet.CurrentY, packet.Direction, packet.MapID, packet.Animation, packet.Gender, packet.SpriteType, packet.MapConnectionType, packet.BorderX, packet.BorderY, nil, packet.AnimationData, packet.MetaTile)
+						--GBA-PK: a dedicated server marks its STRT (ExtraData byte 38 = "D").
+						--It relays like a host but is not a player, so don't add it as one.
+						ServerIsDedicated = string.sub(packet.ExtraData, 38, 38) == "D"
+						if not ServerIsDedicated then
+							--Add host
+							AddPlayer(1, SocketMain, packet.Nickname, packet.GameID, packet.CurrentX, packet.CurrentY, packet.Direction, packet.MapID, packet.Animation, packet.Gender, packet.SpriteType, packet.MapConnectionType, packet.BorderX, packet.BorderY, nil, packet.AnimationData, packet.MetaTile)
+						end
 						--Add yourself
 						PlayerID = packet.RequestBytes
 						AddPlayer(PlayerID, SocketMain, Nickname, GameID, GetPosition())
 						ConsoleForText:moveCursor(0,3)
-						ConsoleForText:print("You have successfully connected.																																														")
+						if ServerIsDedicated then
+							ConsoleForText:print("Connected to a dedicated server.																																													")
+							console:log("Connected to a dedicated server as player " .. PlayerID .. ".")
+						else
+							ConsoleForText:print("You have successfully connected.																																														")
+						end
 						ConsoleForText:moveCursor(0,4)
 						ConsoleForText:print("Connected to a server: Yes				 ")
 					end
@@ -16079,7 +16091,7 @@ function who()
 end
 
 function status()
-	local role = Hosting and "HOST" or (Connected and "JOINED" or "not connected")
+	local role = Hosting and "HOST" or (Connected and (ServerIsDedicated and "JOINED (dedicated server)" or "JOINED") or "not connected")
 	console:log("GBA-PK status: " .. role)
 	console:log("  Game: " .. tostring(GameID) .. "   Name: " .. (Nickname ~= "" and Nickname or "(in-game name)"))
 	console:log("  IP: " .. IPAddress .. "   Port: " .. Port .. "   Players: " .. #players .. "/" .. MaxPlayers)
@@ -16114,6 +16126,7 @@ function disconnect()
 	Connected = false
 	players = {}
 	RecvBuffers = {}
+	ServerIsDedicated = false
 	PlayerID = 0
 	SocketMain = socket:tcp()
 	if ConsoleForText then ConsoleForText:clear() end

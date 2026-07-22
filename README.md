@@ -76,6 +76,30 @@ need to port-forward it for players over the internet.
 you can re-style or rename yourself without leaving the game. Skin changes appear to everyone
 live; a name change is sent out to the other players too.
 
+### Dedicated server (optional)
+
+Instead of one player hosting from inside their game, you can run a small **standalone
+server** that everyone connects to. Nobody plays "the host", and the session stays up even
+if people come and go — better for bigger or longer-running lobbies.
+
+1. On a machine that stays on (a VPS, spare PC or Raspberry Pi), install Lua + luasocket
+   (Debian/Ubuntu: `sudo apt install lua5.4 lua-socket`) and run:
+
+   ```sh
+   lua GBA-PK-Server.lua            # port 4096, up to 8 players
+   lua GBA-PK-Server.lua 4096 16    # custom port / player cap
+   lua GBA-PK-Server.lua -v         # verbose (log every relay)
+   ```
+
+   No ROM or emulator is needed on the server. Port-forward the port (TCP, default `4096`)
+   to that machine, exactly as a host would.
+2. Each **player** just picks **Set IP** → the server's address, then **Join**. That's it —
+   there's no separate "host". The mod detects a dedicated server automatically and won't add
+   a phantom host player.
+
+Peer hosting with `host()` still works exactly as before; the dedicated server is just an
+alternative. See **[ROADMAP.md](ROADMAP.md)** for where multiplayer is headed.
+
 ### Seeing other players
 
 - **Skins animate.** Other players' chosen overworld skins walk with a full walk
