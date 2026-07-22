@@ -4,14 +4,14 @@ Where multiplayer is today and where it's heading. [PokeMMO](https://pokemmo.com
 the reference point for the multiplayer feature set — not to clone it, but as a concrete
 target for what "good" looks like.
 
-## Where we are (v1.3.0)
+## Where we are (v1.5.0)
 
 - Real-time shared overworld: see other players walk, up to 8.
 - Player-vs-player **trade** and **battle** over emulated link cable.
 - Co-op **Soullocke** (soul-linked Nuzlocke) with shared fate.
 - Player skins, in-session name/skin changes, D-pad menus with on-screen (0.11) UI.
 - **Dedicated server** (`GBA-PK-Server.lua`) — a standalone relay so nobody has to host
-  from inside their game.
+  from inside their game — with chat, join/leave notices, heartbeats and auto-reconnect.
 - Works on FR/LG, R/S/E and most romhacks, including randomized ROMs.
 
 ## Networking model
@@ -39,7 +39,9 @@ Roughly in dependency order. Nothing here is committed; it's a direction.
 - [x] **Heartbeat + rate limiting** *(v1.4.0)* — client↔server PING keepalive (lone players
       are no longer silent; clients detect a dead server and say so) and per-client frame
       rate limiting on the server.
-- [ ] **Graceful reconnect** — rejoin after a drop and get your player id/state back.
+- [x] **Graceful reconnect** *(v1.5.0)* — the server issues a reconnect token and holds a
+      dropped player's id/nickname for 2 minutes; the client auto-rejoins a lost dedicated
+      server (retrying for ~100s) and gets its identity back, replacing any stale connection.
 - [ ] **Rooms/channels** — multiple independent sessions on one server; matchmaking by game
       family (FR/LG vs R/S/E) enforced server-side.
 

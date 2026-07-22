@@ -35,6 +35,9 @@ local JOIN_GRACE   = 5           -- seconds a socket may sit connected without s
 local IDLE_TIMEOUT = 15          -- seconds without any data before a client (with peers) is dropped
 local PING_INTERVAL = 5          -- seconds between server heartbeats to each client
 local RATE_LIMIT   = 240         -- max frames per client per second (SPOS ~30/s; battles burst)
+local RESERVE_SECONDS = 120      -- how long a dropped player's id is held for reconnect
+
+math.randomseed(os.time())
 
 local function log(msg)  print(os.date("[%H:%M:%S] ") .. msg) end
 local function vlog(msg) if Verbose then log(msg) end end
@@ -58,7 +61,7 @@ local function buildFrame(gameid, pid, sendto, ptype, reqbytes, flags)
 	local extra = fid(reqbytes)                    -- ExtraData 1-4: RequestBytes
 		.. string.rep("\0", 33)                    -- ExtraData 5-37: binary fields, zeroed
 		.. ((flags and flags.dedicated) and "D" or "F")  -- ExtraData 38: dedicated-server flag
-		.. "FFFFF"                                 -- ExtraData 39-43: filler
+		.. ((flags and flags.token) or "FFFFF")    -- ExtraData 39-43: reconnect token (in STRT)
 	local f = gameid .. "FFFF" .. fid(pid) .. fid(sendto) .. ptype .. extra .. "U"
 	assert(#f == FRAME)
 	return f
@@ -84,10 +87,40 @@ local function joinedCount()
 	return n
 end
 
+-- Reconnect support: when a joined player drops, their id (and nickname) is
+-- held under their token for RESERVE_SECONDS, so rejoining with that token
+-- restores the same identity.
+local reservations = {}   -- token -> { id, nick, expires }
+
+local function purgeReservations()
+	local now = socket.gettime()
+	for token, r in pairs(reservations) do
+		if r.expires < now then reservations[token] = nil end
+	end
+end
+
+local function idReserved(id)
+	for _, r in pairs(reservations) do
+		if r.id == id then return true end
+	end
+	return false
+end
+
 local function freeID()
+	purgeReservations()
 	local id = 2                                  -- 1 is the in-game host slot; never used here
-	while findByID(id) do id = id + 1 end
+	while findByID(id) or idReserved(id) do id = id + 1 end
 	return id
+end
+
+local TOKEN_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+local function newToken()
+	local t = {}
+	for i = 1, 5 do
+		local k = math.random(1, #TOKEN_CHARS)
+		t[i] = TOKEN_CHARS:sub(k, k)
+	end
+	return table.concat(t)
 end
 
 local function sendTo(c, f)
@@ -138,6 +171,10 @@ local function dropClient(c, reason)
 		if v == c then table.remove(clients, i) break end
 	end
 	if c.joined then
+		-- hold their identity so a reconnect within the window restores it
+		if c.token then
+			reservations[c.token] = { id = c.id, nick = c.nick, expires = socket.gettime() + RESERVE_SECONDS }
+		end
 		notice((c.nick or ("Player " .. c.id)) .. " left  (" .. joinedCount() .. "/" .. MaxPlayers .. " online)")
 	end
 end
@@ -147,12 +184,43 @@ end
 -- ---------------------------------------------------------------------------
 local function handleJoin(c, f)
 	if c.joined then return end
-	if joinedCount() >= MaxPlayers then
+	purgeReservations()
+
+	-- Reconnect: a rejoining client carries its old token in the JOIN frame
+	-- (ExtraData 38 = "R", 39-43 = token). Restore its identity if we can.
+	local rejoined = false
+	local token
+	if f:sub(58, 58) == "R" then
+		local presented = f:sub(59, 63)
+		-- still-active session with that token? (client came back before we
+		-- noticed the old socket die) -> replace the stale connection
+		for _, other in ipairs(clients) do
+			if other.joined and other ~= c and other.token == presented then
+				broadcast(buildFrame("SERV", 0, 0, "DISC", other.id), other)
+				pcall(function() other.sock:close() end)
+				other.joined = false                     -- strip it; removed below
+				for i, v in ipairs(clients) do
+					if v == other then table.remove(clients, i) break end
+				end
+				c.id, c.nick, token, rejoined = other.id, other.nick, presented, true
+				vlog("player " .. c.id .. " replaced a stale connection")
+				break
+			end
+		end
+		local r = reservations[presented]
+		if not rejoined and r then
+			c.id, c.nick, token, rejoined = r.id, r.nick, presented, true
+			reservations[presented] = nil
+		end
+	end
+
+	if not rejoined and joinedCount() >= MaxPlayers then
 		log("refused join from " .. c.addr .. " (server full)")
 		sendTo(c, buildFrame("SERV", 0, 0, "RFSE", 2))     -- 2 = player-limit message
 		return
 	end
-	c.id     = freeID()
+	c.id     = c.id or freeID()
+	c.token  = token or newToken()
 	c.gameid = f:sub(1, 4)
 	c.joined = true
 	c.lastSeen = socket.gettime()
@@ -161,9 +229,9 @@ local function handleJoin(c, f)
 	c.posRaw = retype(f, "SPOS", c.id, c.id, c.id)
 
 	-- STRT: "your id is <id>" + the dedicated-server flag (so the client
-	-- doesn't add the server as a phantom host player). GameID is echoed so
-	-- nothing trips a family check.
-	sendTo(c, buildFrame(c.gameid, 0, c.id, "STRT", c.id, { dedicated = true }))
+	-- doesn't add the server as a phantom host player) + the reconnect token.
+	-- GameID is echoed so nothing trips a family check.
+	sendTo(c, buildFrame(c.gameid, 0, c.id, "STRT", c.id, { dedicated = true, token = c.token }))
 	-- GNIC: ask the newcomer for their nickname (they answer with NICK).
 	sendTo(c, buildFrame(c.gameid, 0, c.id, "GNIC", c.id))
 
@@ -175,9 +243,11 @@ local function handleJoin(c, f)
 			sendTo(other, retype(c.posRaw, "APLA", c.id, c.id, c.id))
 		end
 	end
-	log("player " .. c.id .. " joined from " .. c.addr .. " (game " .. c.gameid .. ")" ..
+	local who = c.nick or ("Player " .. c.id)
+	local verb = rejoined and "reconnected" or "joined"
+	log("player " .. c.id .. " " .. verb .. " from " .. c.addr .. " (game " .. c.gameid .. ")" ..
 		"  [" .. joinedCount() .. "/" .. MaxPlayers .. " online]")
-	notice("Player " .. c.id .. " joined  (" .. joinedCount() .. "/" .. MaxPlayers .. " online)")
+	notice(who .. " " .. verb .. "  (" .. joinedCount() .. "/" .. MaxPlayers .. " online)")
 end
 
 local function handleFrame(c, f)
