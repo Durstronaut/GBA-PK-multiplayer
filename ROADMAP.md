@@ -42,8 +42,36 @@ Roughly in dependency order. Nothing here is committed; it's a direction.
 - [x] **Graceful reconnect** *(v1.5.0)* — the server issues a reconnect token and holds a
       dropped player's id/nickname for 2 minutes; the client auto-rejoins a lost dedicated
       server (retrying for ~100s) and gets its identity back, replacing any stale connection.
-- [ ] **Rooms/channels** — multiple independent sessions on one server; matchmaking by game
-      family (FR/LG vs R/S/E) enforced server-side.
+- [x] **Region rooms** *(v1.6.0)* — the server scopes gameplay to game-family rooms (Kanto =
+      FR/LG, Hoenn = R/S/E), enforcing family matchmaking server-side; chat and notices cross
+      rooms. The foundation of the multi-region world below.
+- [ ] **Named rooms** — multiple independent sessions per family on one server (e.g. two
+      separate Kanto lobbies), joinable by name.
+
+### The multi-region world (multiple ROMs, PokeMMO-style)
+
+PokeMMO has every region available at once because it is a **custom engine** that uses the
+ROMs as asset files — it doesn't emulate one cartridge, it reimplements the games. mGBA runs
+one core with one ROM, so a Lua script can't literally do that. What we *can* do is stage
+toward the same experience on our architecture:
+
+1. **Cross-region server** *(done, v1.6.0)* — one dedicated server hosts Kanto
+   (FR/LG) and Hoenn (R/S/E) players at the same time. Gameplay (positions, trades,
+   battles) is scoped to your region's room; **chat and presence are shared**, so the
+   server feels like one world even though play happens per-region.
+2. **Region travel** *(works today, semi-manual)* — "take the ferry": save, load the other
+   region's ROM in mGBA, rejoin — the reconnect token keeps your identity and the server
+   rooms you by whatever game you're now playing, so switching ROMs *is* switching regions.
+   Polish (an in-menu "travel" flow that walks you through it) still to come.
+3. **One-click travel via the bundled build** — the custom mGBA distribution (see the
+   emulator section) automates step 2: swap core + save automatically so switching regions
+   feels like one client with all regions, PokeMMO-style. Needs the launcher/fork work, so
+   it lands with the bundling milestone.
+
+You need to own each region's ROM, and each region keeps its own save file. A single
+*account* spanning regions (one name, shared friends/chat identity) comes from the
+persistent-identity item below; a single *save* spanning regions is engine-level work that
+belongs to the far end of the roadmap.
 
 ### Mid term — MMO-ish structure
 - [ ] **Persistent identity** — accounts/nicknames the server remembers across sessions.

@@ -97,6 +97,13 @@ if people come and go — better for bigger or longer-running lobbies.
    there's no separate "host". The mod detects a dedicated server automatically and won't add
    a phantom host player.
 
+**Regions.** One server hosts **both game families at once**: FireRed/LeafGreen players
+share the Kanto room, Ruby/Sapphire/Emerald players share the Hoenn room. Gameplay stays
+within your region (you can't trade across families — the games can't do that), but **chat
+and join/leave notices are shared**, so it's one community. To "travel", save, load your
+other region's ROM and join again — the server keeps your name and rooms you by the game
+you're now playing.
+
 Peer hosting with `host()` still works exactly as before; the dedicated server is just an
 alternative. See **[ROADMAP.md](ROADMAP.md)** for where multiplayer is headed.
 
