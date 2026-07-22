@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.6.0
+
+- **Region rooms (multi-region stage 1).** One dedicated server now hosts **Kanto (FR/LG)
+  and Hoenn (R/S/E) players at the same time**. Gameplay — positions, introductions,
+  nicknames, trades, battles — is scoped to your region's room (a FireRed map id means
+  nothing in Emerald, and cross-family trades now abort cleanly with "too busy" instead of
+  desyncing), while **chat and join/leave notices cross regions**, so the server still feels
+  like one world: a Hoenn player's message shows up for Kanto players as
+  "NAME (Hoenn): text", and notices read "NAME joined Hoenn (3/8 online)".
+- **Region travel, semi-manual.** Because rejoining rooms you by the game you're playing and
+  the reconnect token keeps your identity, switching regions is: save, load the other
+  region's ROM, join again — same name, new region.
+- Unknown/custom game codes get their own room, so odd romhacks can't pollute official
+  lobbies with mismatched maps.
+
 ## v1.5.0
 
 - **Graceful reconnect.** Losing your connection to a dedicated server no longer kicks you

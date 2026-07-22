@@ -161,6 +161,37 @@ B.sock:send(frame("BPR1", 3, 99, "TRAD", 3))
 pump(B, 0.4)
 check(findType(B, "TBUS") ~= nil, "targeting a missing player returns TBUS")
 
+print("== Region rooms: a Hoenn player is isolated from Kanto gameplay ==")
+A.frames = {}; B.frames = {}
+local H = newClient("BPEE")
+H.sock:send(frame("BPEE", 0, 0, "JOIN", 0))
+pump(H, 0.6); pump(A, 0.4)
+local strtH = findType(H, "STRT")
+check(strtH ~= nil, "Hoenn client joins and receives STRT")
+local hid = strtH and freqbytes(strtH)
+check(findType(H, "APLA") == nil, "Hoenn client is NOT introduced to the Kanto players")
+check(findType(A, "APLA", function(f) return freqbytes(f) == hid end) == nil, "Kanto players are NOT introduced to the Hoenn player")
+local hoennNote = findType(A, "CHAT", function(f) return fpid(f) == 0 and fpayload(f):find("Hoenn") end)
+check(hoennNote ~= nil, "the join notice names the region: " .. tostring(hoennNote and fpayload(hoennNote)))
+
+print("== Region rooms: gameplay stays in-room, chat crosses ==")
+A.frames = {}
+H.sock:send(frame("BPEE", hid or 0, hid or 0, "SPOS", hid or 0))
+pump(A, 0.4)
+check(findType(A, "SPOS", function(f) return fpid(f) == hid end) == nil, "Hoenn SPOS does not reach Kanto")
+H.frames = {}
+H.sock:send(frame("BPEE", hid or 0, 2, "TRAD", hid or 0))
+pump(H, 0.4)
+check(findType(H, "TBUS") ~= nil, "a cross-region trade attempt is rejected with TBUS")
+A.frames = {}
+H.sock:send(frame("BPEE", hid or 0, 0, "CHAT", 0, padded("hi from hoenn")))
+pump(A, 0.4)
+local xchat = findType(A, "CHAT", function(f) return fpid(f) == 0 and fpayload(f):find("hi from hoenn") end)
+check(xchat ~= nil, "cross-region chat arrives, server-wrapped")
+check(xchat and fpayload(xchat):find("Hoenn") ~= nil, "the wrap names the sender's region: " .. tostring(xchat and fpayload(xchat)))
+H.sock:close()
+pump(A, 1.0); A.frames = {}
+
 print("== Disconnect: DISC + leave notice ==")
 A.frames = {}
 B.sock:close()

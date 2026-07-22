@@ -11,7 +11,7 @@ local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joinin
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
 local AutoReconnect = true       -- rejoin a dedicated server automatically if the link drops
-local ScriptVersion = "1.5.0"    -- GBA-PK release version
+local ScriptVersion = "1.6.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands

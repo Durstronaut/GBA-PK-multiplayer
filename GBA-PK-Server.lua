@@ -77,6 +77,17 @@ end
 -- ---------------------------------------------------------------------------
 local clients = {}   -- list of { sock, buf, id, gameid, joined, lastSeen, born, posRaw, nickRaw, addr }
 
+-- Region rooms: gameplay (positions, trades, battles, nicknames) is scoped to
+-- your game family's room, because a FireRed map id means nothing in Emerald.
+-- Chat and join/leave notices are shared across rooms, so one server still
+-- feels like one world (the first stage of the multi-region plan in ROADMAP.md).
+local function familyOf(gameid)
+	local p = (gameid or ""):sub(1, 3)
+	if p == "BPR" or p == "BPG" then return "Kanto" end
+	if p == "AXV" or p == "AXP" or p == "BPE" then return "Hoenn" end
+	return gameid or "?"           -- unknown/custom codes get their own room
+end
+
 local function findByID(id)
 	for _, c in ipairs(clients) do if c.joined and c.id == id then return c end end
 end
@@ -129,9 +140,10 @@ local function sendTo(c, f)
 	return ok
 end
 
-local function broadcast(f, except)
+-- Broadcast to every joined client, optionally only those in `room`.
+local function broadcast(f, except, room)
 	for _, c in ipairs(clients) do
-		if c.joined and c ~= except then sendTo(c, f) end
+		if c.joined and c ~= except and (not room or c.room == room) then sendTo(c, f) end
 	end
 end
 
@@ -139,9 +151,9 @@ end
 -- frame types older clients don't know (CHAT/PING): those fall through their
 -- handler chain, and an unknown frame addressed to someone else makes a v1.3.0
 -- client reply TBUS — addressed to *them*, it's ignored silently instead.
-local function broadcastAddressed(f, except)
+local function broadcastAddressed(f, except, room)
 	for _, c in ipairs(clients) do
-		if c.joined and c ~= except then
+		if c.joined and c ~= except and (not room or c.room == room) then
 			sendTo(c, f:sub(1, 12) .. fid(c.id) .. f:sub(17))
 		end
 	end
@@ -222,6 +234,8 @@ local function handleJoin(c, f)
 	c.id     = c.id or freeID()
 	c.token  = token or newToken()
 	c.gameid = f:sub(1, 4)
+	c.room   = familyOf(c.gameid)   -- on a rejoin after a ROM swap this lands
+	                                -- them in the new region's room ("travel")
 	c.joined = true
 	c.lastSeen = socket.gettime()
 	-- The JOIN frame is position-format and carries the joiner's coordinates:
@@ -235,9 +249,10 @@ local function handleJoin(c, f)
 	-- GNIC: ask the newcomer for their nickname (they answer with NICK).
 	sendTo(c, buildFrame(c.gameid, 0, c.id, "GNIC", c.id))
 
-	-- Introduce everyone to everyone.
+	-- Introduce everyone to everyone — within the same region's room only
+	-- (a FireRed player's position is meaningless on an Emerald map).
 	for _, other in ipairs(clients) do
-		if other.joined and other ~= c then
+		if other.joined and other ~= c and other.room == c.room then
 			sendTo(c, retype(other.posRaw, "APLA", other.id, other.id, other.id))
 			if other.nickRaw then sendTo(c, other.nickRaw) end
 			sendTo(other, retype(c.posRaw, "APLA", c.id, c.id, c.id))
@@ -245,9 +260,9 @@ local function handleJoin(c, f)
 	end
 	local who = c.nick or ("Player " .. c.id)
 	local verb = rejoined and "reconnected" or "joined"
-	log("player " .. c.id .. " " .. verb .. " from " .. c.addr .. " (game " .. c.gameid .. ")" ..
-		"  [" .. joinedCount() .. "/" .. MaxPlayers .. " online]")
-	notice(who .. " " .. verb .. "  (" .. joinedCount() .. "/" .. MaxPlayers .. " online)")
+	log("player " .. c.id .. " " .. verb .. " from " .. c.addr .. " (game " .. c.gameid ..
+		", room " .. c.room .. ")  [" .. joinedCount() .. "/" .. MaxPlayers .. " online]")
+	notice(who .. " " .. verb .. " " .. c.room .. "  (" .. joinedCount() .. "/" .. MaxPlayers .. " online)")
 end
 
 local function handleFrame(c, f)
@@ -279,10 +294,21 @@ local function handleFrame(c, f)
 	elseif t == "PING" then
 		-- liveness only; lastSeen is already refreshed above
 	elseif t == "CHAT" then
-		broadcastAddressed(f, c)                      -- everyone else sees the message
+		-- Chat crosses rooms (one world socially). Same-room clients get the raw
+		-- frame and resolve the name from their player list; other rooms can't,
+		-- so the message is re-wrapped as a server line: "NAME (Room): text".
+		broadcastAddressed(f, c, c.room)
+		local wrapped = (c.nick or ("Player " .. c.id)) .. " (" .. c.room .. "): " .. f:sub(21, 63):gsub("~*$", "")
+		if #wrapped > 43 then wrapped = wrapped:sub(1, 43) end
+		local wf = "SERV" .. "FFFF" .. fid(0) .. fid(0) .. "CHAT" .. wrapped .. string.rep("~", 43 - #wrapped) .. "U"
+		for _, other in ipairs(clients) do
+			if other.joined and other ~= c and other.room ~= c.room then
+				sendTo(other, wf:sub(1, 12) .. fid(other.id) .. wf:sub(17))
+			end
+		end
 	elseif t == "SPOS" then
 		c.posRaw = f
-		broadcast(f, c)                               -- same relay the in-game host does
+		broadcast(f, c, c.room)                       -- same relay the in-game host does
 	elseif t == "NICK" then
 		-- Presence: keep nicknames unique. If this name is already taken by another
 		-- player, rewrite it to "NAME(id)" before caching/broadcasting, so everyone
@@ -300,12 +326,14 @@ local function handleFrame(c, f)
 		end
 		c.nick = nick
 		c.nickRaw = f
-		broadcast(f, c)                               -- names always go to everyone
+		broadcast(f, c, c.room)                       -- names resolve within the room
 	else
 		-- Targeted packet (trade/battle/Pokémon data/Soullocke/…): forward raw
 		-- to its SendToID, exactly like the in-game host's relay. If the target
-		-- is gone, answer TBUS ("too busy") so trades/battles abort cleanly.
+		-- is gone — or plays a different game family (cross-room trades/battles
+		-- can't work) — answer TBUS ("too busy") so the attempt aborts cleanly.
 		local target = findByID(frameSendTo(f))
+		if target and target.room ~= c.room then target = nil end
 		if target then
 			sendTo(target, f)
 			vlog("relay " .. t .. " " .. c.id .. " -> " .. target.id)
