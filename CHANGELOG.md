@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.3.0
+
+- **Dedicated server.** New standalone `GBA-PK-Server.lua` — a headless relay you can run on
+  a VPS, spare PC or Pi (`lua GBA-PK-Server.lua [port] [maxplayers]`, needs luasocket). No
+  emulator or ROM required. Everyone just uses **Set IP > Join** to connect; nobody has to
+  host from inside their game, and the session survives any one player leaving. It speaks the
+  same 64-byte protocol and plays the host's relay role (assigns ids, exchanges the join
+  handshake, relays position/trade/battle/Soullocke packets, announces disconnects) but is not
+  itself a player. The client detects a dedicated server (a flag in the STRT handshake) and
+  doesn't add a phantom host player; peer `host()` mode is unchanged.
+- **ROADMAP.md** added: multiplayer feature goals with PokeMMO as the yardstick, and the
+  emulator decision (stay on mGBA; a bundled/customized build is a later packaging step).
+
 ## v1.2.3
 
 - **Fix garbled packets / random disconnects over the internet.** Network packets are a fixed
