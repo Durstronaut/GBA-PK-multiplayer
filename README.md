@@ -105,7 +105,9 @@ alternative. See **[ROADMAP.md](ROADMAP.md)** for where multiplayer is headed.
 0.11+ also in a small feed at the bottom of the game screen that fades after a few seconds.
 The server announces joins and leaves in chat, keeps nicknames unique (a duplicate shows as
 `NAME(id)` to others), and exchanges heartbeats with clients so idle sessions stay alive and
-a dead server is noticed within seconds.
+a dead server is noticed within seconds. If your connection drops, the mod **reconnects
+automatically** and the server gives you your player id and name back (it holds them for
+2 minutes) — everyone else just sees "NAME reconnected".
 
 ### Seeing other players
 

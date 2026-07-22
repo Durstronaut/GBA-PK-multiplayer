@@ -59,6 +59,8 @@ local strt = findType(A, "STRT")
 check(strt ~= nil, "A receives STRT")
 check(strt and fdedicated(strt), "STRT carries the dedicated-server flag (D)")
 check(strt and freqbytes(strt) == 2, "A is assigned player id 2")
+local tokA = strt and strt:sub(59, 63)
+check(tokA and tokA ~= "FFFFF", "STRT carries a reconnect token [" .. tostring(tokA) .. "]")
 check(findType(A, "GNIC") ~= nil, "A receives GNIC (server asks for nickname)")
 
 print("== Client B joins; A gets an APLA and a join notice ==")
@@ -85,6 +87,42 @@ B.sock:send(frame("BPR1", 3, 0, "NICK", 0, padded("DUDE")))
 pump(A, 0.4)
 local nickB = findType(A, "NICK")
 check(nickB and fpayload(nickB) == "DUDE(3)", "duplicate nickname is deduped to DUDE(3) [got " .. tostring(nickB and fpayload(nickB)) .. "]")
+
+print("== Reconnect: replace a stale connection ==")
+B.frames = {}
+local A2 = newClient("BPR1")
+A2.sock:send(frame("BPR1", 0, 0, "JOIN", 0, fid(0) .. string.rep("\0", 33) .. "R" .. tokA))
+pump(A2, 0.6); pump(B, 0.4)
+local strtA2 = findType(A2, "STRT")
+check(strtA2 and freqbytes(strtA2) == 2, "rejoining with the token restores player id 2 [got " .. tostring(strtA2 and freqbytes(strtA2)) .. "]")
+check(strtA2 and strtA2:sub(59, 63) == tokA, "the same token is confirmed back")
+check(findType(B, "DISC", function(f) return freqbytes(f) == 2 end) ~= nil, "B is told the stale player 2 left")
+check(findType(B, "APLA", function(f) return freqbytes(f) == 2 end) ~= nil, "B is re-introduced to the rejoined player 2")
+local reNote = findType(B, "CHAT", function(f) return fpid(f) == 0 and fpayload(f):find("reconnected") end)
+check(reNote ~= nil, "B sees a reconnect notice: " .. tostring(reNote and fpayload(reNote)))
+A = A2
+
+print("== Reconnect: drop, then rejoin inside the reservation window ==")
+A.sock:close()
+pump(B, 1.2)   -- server notices the close, reserves id 2
+check(findType(B, "DISC", function(f) return freqbytes(f) == 2 end) ~= nil, "B is told player 2 dropped")
+B.frames = {}
+local A3 = newClient("BPR1")
+A3.sock:send(frame("BPR1", 0, 0, "JOIN", 0, fid(0) .. string.rep("\0", 33) .. "R" .. tokA))
+pump(A3, 0.6); pump(B, 0.4)
+local strtA3 = findType(A3, "STRT")
+check(strtA3 and freqbytes(strtA3) == 2, "rejoin within the window restores id 2 from the reservation")
+check(findType(B, "APLA", function(f) return freqbytes(f) == 2 end) ~= nil, "B is re-introduced after the reservation rejoin")
+A = A3
+
+print("== Reconnect: a bogus token gets a fresh id ==")
+local C = newClient("BPR1")
+C.sock:send(frame("BPR1", 0, 0, "JOIN", 0, fid(0) .. string.rep("\0", 33) .. "R" .. "ZZZZZ"))
+pump(C, 0.6)
+local strtC = findType(C, "STRT")
+check(strtC and freqbytes(strtC) == 4, "unknown token falls back to a fresh id [got " .. tostring(strtC and freqbytes(strtC)) .. "]")
+C.sock:close()
+pump(A, 0.8); A.frames = {}; pump(B, 0.8); B.frames = {}
 
 print("== Chat relay ==")
 A.frames = {}; B.frames = {}

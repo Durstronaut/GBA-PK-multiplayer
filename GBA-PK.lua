@@ -10,7 +10,8 @@ local Nickname   = ""            -- up to 10 chars. Blank = use your in-game nam
 local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joining)
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
-local ScriptVersion = "1.4.0"    -- GBA-PK release version
+local AutoReconnect = true       -- rejoin a dedicated server automatically if the link drops
+local ScriptVersion = "1.5.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -141,6 +142,10 @@ local Connected = false
 ServerIsDedicated = false    -- GBA-PK: true when joined to a standalone GBA-PK-Server.lua (host is not a player)
 ServerLastSeen = 0           -- GBA-PK: os.time() of the last PING/data seen from the dedicated server
 local HeartbeatTick = 0      -- GBA-PK: counts network_send ticks between client PINGs
+ReconnectToken = nil         -- GBA-PK: token the dedicated server issued (proves who we are on rejoin)
+Reconnecting = false         -- GBA-PK: true while auto-rejoining a dropped dedicated server
+local ReconnectAttempts = 0
+local NextRetryAt = 0
 local ConnectType = 0
 local NoPlayers = 0
 local GameID
@@ -6898,6 +6903,11 @@ end
 
 
 function AddPlayer(id, socket, nickname, GameID, startX, startY, direction, mapID, animation, gender, spritetype, entrance, borderx, bordery, connections, animdata, tile)
+	--GBA-PK: a rejoining player can be announced again (APLA) while an entry with
+	--the same id is still around; replace it instead of ghosting a duplicate.
+	for i, existing in ipairs(players) do
+		if existing:GetID() == id then table.remove(players, i) break end
+	end
 	local player = Player:new(id, socket, nickname, GameID, startX, startY, direction, mapID, animation, gender, spritetype, entrance, borderx, bordery, animdata, tile)
 	table.insert(players, player)
 	--UpdatePlayerConsole()
@@ -10571,7 +10581,43 @@ function Disconnect()
 	ConnectNetwork()
 end
 
+--GBA-PK: drop into auto-reconnect after losing a dedicated server. Keeps the
+--reconnect token so the server can give us our old player id back, and retries
+--in the background without disabling the script.
+function StartReconnect(reason)
+	console:log("Lost the dedicated server (" .. tostring(reason) .. "). Reconnecting...")
+	pcall(function() SocketMain:close() end)
+	SocketMain = socket:tcp()
+	Connected = false
+	Reconnecting = true
+	ReconnectAttempts = 0
+	NextRetryAt = os.time() + 3
+	players = {}
+	RecvBuffers = {}
+	HeartbeatTick = 0
+	ServerLastSeen = 0
+	if ConsoleForText then ConsoleForText:clear() end
+end
+
 function Connection()
+	if Reconnecting and not Connected and os.time() >= NextRetryAt then
+		ReconnectAttempts = ReconnectAttempts + 1
+		if ReconnectAttempts > 20 then
+			Reconnecting = false
+			console:log("Could not reach the server after 20 tries. Type join() to try again.")
+			return
+		end
+		NextRetryAt = os.time() + 5
+		pcall(function() SocketMain:close() end)
+		SocketMain = socket:tcp()
+		local ok = SocketMain:connect(IPAddress, Port)
+		if ok then
+			Connected = true
+			ServerLastSeen = os.time()
+			console:log("Server is back (attempt " .. ReconnectAttempts .. "). Rejoining...")
+			SendData(SocketMain, "Request")   --JOIN carries the reconnect token
+		end
+	end
 	if updateTimers("network_send") then
 		if Hosting then
 			if #players > 1 then
@@ -10617,8 +10663,12 @@ function Connection()
 					SendSpecialData(SocketMain, "PING", 0, PlayerID)
 				end
 				if ServerLastSeen > 0 and (os.time() - ServerLastSeen) > 25 then
-					console:log("Lost the dedicated server (no heartbeat for 25s). Disconnecting.")
-					disconnect()
+					if AutoReconnect then
+						StartReconnect("no heartbeat for 25s")
+					else
+						console:log("Lost the dedicated server (no heartbeat for 25s). Disconnecting.")
+						disconnect()
+					end
 					return
 				end
 			end
@@ -10943,7 +10993,18 @@ function ReceiveData(SocketMain)
 						--GBA-PK: a dedicated server marks its STRT (ExtraData byte 38 = "D").
 						--It relays like a host but is not a player, so don't add it as one.
 						ServerIsDedicated = string.sub(packet.ExtraData, 38, 38) == "D"
-						if ServerIsDedicated then ServerLastSeen = os.time() end
+						if ServerIsDedicated then
+							ServerLastSeen = os.time()
+							--GBA-PK: the server hands out a reconnect token (ExtraData 39-43);
+							--presenting it on a later JOIN gets us our player id back.
+							local token = string.sub(packet.ExtraData, 39, 43)
+							if token ~= "FFFFF" and #token == 5 then ReconnectToken = token end
+							if Reconnecting then
+								Reconnecting = false
+								ReconnectAttempts = 0
+								console:log("Reconnected to the server as player " .. tostring(packet.RequestBytes) .. ".")
+							end
+						end
 						if not ServerIsDedicated then
 							--Add host
 							AddPlayer(1, SocketMain, packet.Nickname, packet.GameID, packet.CurrentX, packet.CurrentY, packet.Direction, packet.MapID, packet.Animation, packet.Gender, packet.SpriteType, packet.MapConnectionType, packet.BorderX, packet.BorderY, nil, packet.AnimationData, packet.MetaTile)
@@ -11422,6 +11483,12 @@ end
 --Send Data to clients
 function CreatePacket(RequestTemp, PacketTemp, DataToUse, SendToID)
 	local FillerStuff = "FFFFFF"   -- GBA-PK: 6 bytes (2 repurposed for status+skin at offsets 36-37)
+	--GBA-PK: a rejoining client proves who it is by carrying the server-issued
+	--token in its JOIN (ExtraData 38 = "R" marker, 39-43 = token). Fresh joins
+	--keep the plain filler, and old servers never read these bytes.
+	if RequestTemp == "JOIN" and ReconnectToken and #ReconnectToken == 5 then
+		FillerStuff = "R" .. ReconnectToken
+	end
 	local PacketMap = {}
 	local PacketPlayer = {}
 	local PacketPlayerID, PacketGameID = 0, 0
@@ -16194,6 +16261,8 @@ function disconnect()
 	players = {}
 	RecvBuffers = {}
 	ServerIsDedicated = false
+	Reconnecting = false
+	ReconnectToken = nil
 	PlayerID = 0
 	SocketMain = socket:tcp()
 	if ConsoleForText then ConsoleForText:clear() end

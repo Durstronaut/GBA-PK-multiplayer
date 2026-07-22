@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.5.0
+
+- **Graceful reconnect.** Losing your connection to a dedicated server no longer kicks you
+  back to square one. The server now issues each player a reconnect token in the join
+  handshake and holds a dropped player's id and nickname for 2 minutes; the client detects a
+  dead server (heartbeat silence), quietly retries in the background (up to 20 attempts over
+  ~100 seconds) and rejoins with its token — getting the same player id and name back. A
+  rejoin also cleanly replaces a stale half-open connection, and everyone else sees a
+  "NAME reconnected" notice instead of a confusing leave/join pair. Set `AutoReconnect =
+  false` at the top of the script to keep the old behavior.
+- Re-announced players can no longer create duplicate entries in the player list (the client
+  now replaces an existing entry with the same id).
+
 ## v1.4.0
 
 - **Chat.** Type `say("your message")` in the scripting box to talk to everyone in the
