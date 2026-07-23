@@ -11,7 +11,7 @@ local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joinin
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
 local AutoReconnect = true       -- rejoin a dedicated server automatically if the link drops
-local ScriptVersion = "2.0.0"    -- GBA-PK release version
+local ScriptVersion = "2.1.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 -- GBA-PK: ServerIP may be "host:port" (e.g. a Railway TCP-proxy endpoint);
@@ -16443,12 +16443,12 @@ function ScreenMenuUI:render(screen)
 		p:setFillColor(0x00000000)
 		p:drawRectangle(0, 0, SW, SH)
 		-- border + solid panel background (opaque so each redraw fully clears the last)
-		p:setFillColor(0xFF3A6EA5)
+		p:setFillColor(0xFF404048)
 		p:drawRectangle(bx, by, bw, bh)
-		p:setFillColor(0xFF0E1626)
+		p:setFillColor(0xFFF8F4E8)
 		p:drawRectangle(bx + 1, by + 1, bw - 2, bh - 2)
 		-- title bar
-		p:setFillColor(0xFF2A66C8)
+		p:setFillColor(0xFF4868B0)
 		p:drawRectangle(bx + 1, by + 1, bw - 2, 11)
 		-- text blends onto the panel so glyph edges stay smooth
 		p:setBlend(true)
@@ -16460,7 +16460,7 @@ function ScreenMenuUI:render(screen)
 		local y = by + 14
 		if screen.subtitle then
 			p:setFontSize(6)
-			p:setFillColor(0xFF9FB2CC)
+			p:setFillColor(0xFF807860)
 			p:drawText(screen.subtitle, bx + 4, y)
 			y = y + 8
 		end
@@ -16470,20 +16470,20 @@ function ScreenMenuUI:render(screen)
 		for i = 1, #opts do
 			if i == screen.selected then
 				p:setBlend(false)
-				p:setFillColor(0xFF2A66C8)
+				p:setFillColor(0xFF4868B0)
 				p:drawRectangle(bx + 2, y - 1, bw - 4, 10)
 				p:setBlend(true)
 				p:setFillColor(0xFFFFFFFF)
 				p:drawText("> " .. opts[i], bx + 5, y)
 			else
-				p:setFillColor(0xFFD2DCEC)
+				p:setFillColor(0xFF383830)
 				p:drawText("   " .. opts[i], bx + 5, y)
 			end
 			y = y + 10
 		end
 		local foot = screen.footer or {}
 		p:setFontSize(6)
-		p:setFillColor(0xFF8496AE)
+		p:setFillColor(0xFF908868)
 		local fy = by + bh - 3 - (#foot * 8)
 		for i = 1, #foot do
 			p:drawText(foot[i], bx + 4, fy)

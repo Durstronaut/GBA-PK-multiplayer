@@ -117,6 +117,12 @@ we go, the more the server has to become the source of truth rather than a relay
   - *A native netplay build* — mGBA and RetroArch already do lockstep link-cable netplay, but
     that's a *different* thing: it syncs two instances of *one* cartridge frame-for-frame, not
     many independent save files sharing an overworld. Not what this project is.
+- **Companion apps (the bridge before a fork):** the server speaks a simple TCP protocol,
+  so *anything* can join it — the keyboard chat companion (`chat/gba-pk-chat.py`, v2.1.0) is
+  the first example. A server-status web page or a Discord chat bridge are the same pattern.
+  This is how we get "MMO ergonomics" (real text input, presence at a glance) without
+  forking the emulator: mGBA's Lua API has no keyboard-text input and no rich UI toolkit,
+  so in-emulator chat entry can never beat a real textbox next to the window.
 - **Bundling / customizing:** the realistic long-term path if we outgrow the scripting API is
   a **lightly-patched mGBA distribution** shipped with the script and font preconfigured
   (one-click "install & play"), and eventually small native hooks (e.g. a cleaner overlay or
