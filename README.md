@@ -159,13 +159,19 @@ In two-way mode, Discord messages appear in everyone's in-game feed as
 `Discord (CHAT): Name: text`, and all in-game chat (plus join/leave notices) flows to the
 channel. Like the chat companion, it occupies one player slot.
 
-**Playing on Android?** Not yet: no Android GBA emulator exposes mGBA's Lua scripting —
-mGBA exists on Android only as a [RetroArch](https://www.retroarch.com/) core, and cores
-can't load scripts, so the mod has nothing to run in. That's an upstream limitation we
-watch rather than work around (see the no-fork stance in [ROADMAP.md](ROADMAP.md)). What
-works on a phone today: joining the session's **chat** through the Discord bridge above
-(or the chat companion under Termux), and playing your PC's mGBA remotely with a
-streaming app such as Moonlight or Steam Link.
+**Web chat — phones just open a URL.** Every server can also serve a phone-friendly chat
+page (`server/webchat.py`, bundled into the Docker/Railway image): give your Railway
+service an HTTP domain and `https://your-app.up.railway.app` *is* the chat — pick a name,
+type, and it lands in every player's in-game feed as `Web (CHAT): Name: text`, with all
+in-game chat flowing back live. No app, no account. See [server/README.md](server/README.md).
+
+**Playing on Android?** No Android GBA emulator can load the mod directly (no scripting
+support in any of them), but real desktop mGBA — scripting and all — can run *on* an
+Android device through Winlator/GameHub Lite (Windows build, mGBA 0.11, full mod) or
+Termux + proot (Linux build). **[ANDROID.md](ANDROID.md)** walks through every option,
+including the chat-only ones (web page above, Discord bridge, Termux companion) and why
+we don't fork an Android emulator. On the PC itself you never leave the game to chat —
+press the chat key and type.
 
 **Your identity persists.** The mod stores your name and server identity in a small
 `GBA-PK.identity` file next to the script, and the server remembers you in
