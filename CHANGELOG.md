@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.1.0
+
+- **The menu looks like the game now.** The on-screen menu swapped its dark debug-panel look
+  for a Gen-3 dialog style: cream paper, dark text, blue title strip and selection bar.
+- **A real keyboard chat box.** New `chat/gba-pk-chat.py` (Python 3, stdlib only): run it in
+  a terminal next to your game — `python3 chat/gba-pk-chat.py <host:port> <name>` — and you
+  get proper keyboard chat with the whole server. It joins as a chat-only player, your typed
+  messages appear in-game in everyone's chat feed as `NAME (CHAT): text`, and in-game chat
+  prints in your terminal. (It occupies one player slot and heartbeats like any client.)
+
 ## v2.0.0
 
 The mid-term roadmap tier, complete. One dedicated server is now a small multiplayer

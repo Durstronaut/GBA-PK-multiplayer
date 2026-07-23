@@ -129,6 +129,17 @@ a dead server is noticed within seconds. If your connection drops, the mod **rec
 automatically** and the server gives you your player id and name back (it holds them for
 2 minutes) — everyone else just sees "NAME reconnected".
 
+**A real keyboard for chat.** Typing with `say()` works, but for actual conversations run
+the **chat companion** in a terminal next to your game:
+
+```sh
+python3 chat/gba-pk-chat.py tramway.proxy.rlwy.net:31702 YourName
+```
+
+It connects to the same server as a chat-only player: what you type shows up in everyone's
+in-game chat feed (as `Name (CHAT): text`), and in-game chat prints in your terminal.
+Python 3 only, no dependencies. It uses one player slot on the server.
+
 **Your identity persists.** The mod stores your name and server identity in a small
 `GBA-PK.identity` file next to the script, and the server remembers you in
 `GBA-PK-Server.accounts` — so you can restart the emulator, your PC or the server and come
