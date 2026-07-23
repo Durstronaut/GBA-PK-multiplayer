@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.8.0
+
+- **Map-local visibility — the server can now scale past 8 players.** Small lobbies behave
+  exactly as before. When a region room's population exceeds a threshold (server flag
+  `--local=N`, default 7), the server switches that room to map-local mode: you're only
+  introduced to — and synced with — players **on your current map**, are removed from view
+  when you part ways, and see at most 8 others (the renderer's limit). Walking onto a map
+  introduces whoever is there; a transition grace keeps border crossings from flickering.
+  Combined with a higher player cap (`lua GBA-PK-Server.lua 4096 32 --local=7`), one server
+  can hold a whole community while each screen stays sane.
+- Clients on a dedicated server now keep reporting their position even when nobody is
+  visible, so the server always knows which map you're on. **Update the script together with
+  the server** — an old client alone on a map can't be re-introduced by a map-local server.
+
 ## v1.7.0
 
 - **Persistent identity.** You are now *someone* on a server, durably. The mod saves your

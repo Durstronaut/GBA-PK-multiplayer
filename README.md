@@ -89,6 +89,7 @@ if people come and go — better for bigger or longer-running lobbies.
    lua GBA-PK-Server.lua            # port 4096, up to 8 players
    lua GBA-PK-Server.lua 4096 16    # custom port / player cap
    lua GBA-PK-Server.lua -v         # verbose (log every relay)
+   lua GBA-PK-Server.lua 4096 32 --local=7   # big lobby: map-local visibility past 7/room
    ```
 
    No ROM or emulator is needed on the server. Port-forward the port (TCP, default `4096`)
@@ -103,6 +104,11 @@ within your region (you can't trade across families — the games can't do that)
 and join/leave notices are shared**, so it's one community. To "travel", save, load your
 other region's ROM and join again — the server keeps your name and rooms you by the game
 you're now playing.
+
+**Big lobbies.** Above `--local=N` players in a room (default 7), the server switches to
+**map-local visibility**: you only see and sync with players on your current map (up to 8 at
+once — the renderer's limit), and walking onto a map introduces whoever is there. Small
+lobbies keep full visibility automatically.
 
 Peer hosting with `host()` still works exactly as before; the dedicated server is just an
 alternative. See **[ROADMAP.md](ROADMAP.md)** for where multiplayer is headed.

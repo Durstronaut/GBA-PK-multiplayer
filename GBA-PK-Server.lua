@@ -28,7 +28,12 @@ local socket = require("socket")
 local Port       = tonumber(arg and arg[1]) or 4096
 local MaxPlayers = tonumber(arg and arg[2]) or 8
 local Verbose    = false
-for _, a in ipairs(arg or {}) do if a == "-v" or a == "--verbose" then Verbose = true end end
+local LocalThreshold = 7         -- room population above which map-local visibility kicks in
+for _, a in ipairs(arg or {}) do
+	if a == "-v" or a == "--verbose" then Verbose = true end
+	local n = tostring(a):match("^%-%-local=(%d+)$")
+	if n then LocalThreshold = tonumber(n) end
+end
 
 local FRAME = 64                 -- every packet is exactly this many bytes
 local JOIN_GRACE   = 5           -- seconds a socket may sit connected without sending JOIN
@@ -51,6 +56,11 @@ local function vlog(msg) if Verbose then log(msg) end end
 local function fid(n) return string.format("%04d", 1000 + n) end
 
 local function frameType(f)     return f:sub(17, 20) end
+-- Map ids ride in every position-format frame (ExtraData 10-11 current map,
+-- 12-13 previous map, little-endian), so the server always knows where
+-- everyone is without understanding the games' map graphs.
+local function frameMap(f)      return (f:byte(30) or 0) | ((f:byte(31) or 0) << 8) end
+local function framePrevMap(f)  return (f:byte(32) or 0) | ((f:byte(33) or 0) << 8) end
 local function frameSendTo(f)   return (tonumber(f:sub(13, 16)) or 1000) - 1000 end
 local function frameValid(f)    return #f == FRAME and f:sub(64, 64) == "U" end
 
@@ -90,6 +100,68 @@ end
 
 local function findByID(id)
 	for _, c in ipairs(clients) do if c.joined and c.id == id then return c end end
+end
+
+local function roomCount(room)
+	local n = 0
+	for _, c in ipairs(clients) do if c.joined and c.room == room then n = n + 1 end end
+	return n
+end
+
+local function sendTo(c, f)
+	local ok, err = c.sock:send(f)
+	if not ok then vlog("send to #" .. tostring(c.id) .. " failed: " .. tostring(err)) end
+	return ok
+end
+
+-- ---------------------------------------------------------------------------
+-- Map-local visibility. Small lobbies (room population <= LocalThreshold) get
+-- full visibility, exactly as before. Above that, players are only introduced
+-- to — and synced with — others on the same map (or one they're transitioning
+-- from, so border crossings don't flicker), removed again when they part ways,
+-- and each client sees at most VIS_CAP others (the renderer has 8 slots).
+-- This is what lets one server hold far more players than one screen can.
+-- ---------------------------------------------------------------------------
+local VIS_CAP = 8
+
+local function visCount(viewer)
+	local n = 0
+	for _ in pairs(viewer.vis or {}) do n = n + 1 end
+	return n
+end
+
+local function onSameMap(a, b)
+	if a.map == b.map then return true end
+	-- during a map transition the previous map keeps the pair linked briefly
+	if a.posRaw and framePrevMap(a.posRaw) == b.map then return true end
+	if b.posRaw and framePrevMap(b.posRaw) == a.map then return true end
+	return false
+end
+
+-- Make `viewer` see (or stop seeing) `subject`, sending APLA/RPLA as needed.
+local function setVisible(viewer, subject, on)
+	viewer.vis = viewer.vis or {}
+	if on and not viewer.vis[subject.id] then
+		if visCount(viewer) >= VIS_CAP then return end
+		viewer.vis[subject.id] = true
+		sendTo(viewer, retype(subject.posRaw, "APLA", subject.id, subject.id, subject.id))
+		if subject.nickRaw then sendTo(viewer, subject.nickRaw) end
+	elseif not on and viewer.vis[subject.id] then
+		viewer.vis[subject.id] = nil
+		sendTo(viewer, buildFrame("SERV", 0, viewer.id, "RPLA", subject.id))
+	end
+end
+
+-- Recompute who can see `c` (and whom `c` can see) after a join or map change.
+local function updateVisibility(c)
+	local localMode = roomCount(c.room) > LocalThreshold
+	for _, o in ipairs(clients) do
+		if o.joined and o ~= c and o.room == c.room then
+			local should = (not localMode) or onSameMap(c, o)
+			setVisible(o, c, should)
+			setVisible(c, o, should)
+		end
+	end
 end
 
 local function joinedCount()
@@ -167,12 +239,6 @@ local function newToken()
 	return table.concat(t)
 end
 
-local function sendTo(c, f)
-	local ok, err = c.sock:send(f)
-	if not ok then vlog("send to #" .. tostring(c.id) .. " failed: " .. tostring(err)) end
-	return ok
-end
-
 -- Broadcast to every joined client, optionally only those in `room`.
 local function broadcast(f, except, room)
 	for _, c in ipairs(clients) do
@@ -215,6 +281,9 @@ local function dropClient(c, reason)
 	for i, v in ipairs(clients) do
 		if v == c then table.remove(clients, i) break end
 	end
+	for _, o in ipairs(clients) do
+		if o.vis then o.vis[c.id] = nil end
+	end
 	if c.joined then
 		-- hold their identity so a reconnect within the window restores it
 		if c.token then
@@ -254,6 +323,9 @@ local function handleJoin(c, f)
 				for i, v in ipairs(clients) do
 					if v == other then table.remove(clients, i) break end
 				end
+				for _, o in ipairs(clients) do
+					if o.vis then o.vis[other.id] = nil end   -- forget the stale sighting
+				end
 				c.id, c.nick, token, rejoined = other.id, other.nick, presented, true
 				vlog("player " .. c.id .. " replaced a stale connection")
 				break
@@ -283,6 +355,8 @@ local function handleJoin(c, f)
 	c.gameid = f:sub(1, 4)
 	c.room   = familyOf(c.gameid)   -- on a rejoin after a ROM swap this lands
 	                                -- them in the new region's room ("travel")
+	c.map    = frameMap(f)
+	c.vis    = {}
 	c.joined = true
 	c.lastSeen = socket.gettime()
 	-- The JOIN frame is position-format and carries the joiner's coordinates:
@@ -296,15 +370,8 @@ local function handleJoin(c, f)
 	-- GNIC: ask the newcomer for their nickname (they answer with NICK).
 	sendTo(c, buildFrame(c.gameid, 0, c.id, "GNIC", c.id))
 
-	-- Introduce everyone to everyone — within the same region's room only
-	-- (a FireRed player's position is meaningless on an Emerald map).
-	for _, other in ipairs(clients) do
-		if other.joined and other ~= c and other.room == c.room then
-			sendTo(c, retype(other.posRaw, "APLA", other.id, other.id, other.id))
-			if other.nickRaw then sendTo(c, other.nickRaw) end
-			sendTo(other, retype(c.posRaw, "APLA", c.id, c.id, c.id))
-		end
-	end
+	-- Introduce players — same room only, and by map when the room is crowded.
+	updateVisibility(c)
 	local who = c.nick or ("Player " .. c.id)
 	local verb = rejoined and "reconnected" or "joined"
 	log("player " .. c.id .. " " .. verb .. " from " .. c.addr .. " (game " .. c.gameid ..
@@ -355,7 +422,17 @@ local function handleFrame(c, f)
 		end
 	elseif t == "SPOS" then
 		c.posRaw = f
-		broadcast(f, c, c.room)                       -- same relay the in-game host does
+		local m, pm = frameMap(f), framePrevMap(f)
+		if m ~= c.map or pm ~= c.pmap then
+			c.map, c.pmap = m, pm
+			updateVisibility(c)     -- entering a map introduces; settling severs
+		end
+		-- relay only to clients that can currently see this player
+		for _, o in ipairs(clients) do
+			if o.joined and o ~= c and o.room == c.room and o.vis and o.vis[c.id] then
+				sendTo(o, f)
+			end
+		end
 	elseif t == "NICK" then
 		-- Presence: keep nicknames unique. If this name is already taken by another
 		-- player, rewrite it to "NAME(id)" before caching/broadcasting, so everyone

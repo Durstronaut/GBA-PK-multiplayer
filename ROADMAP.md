@@ -4,7 +4,7 @@ Where multiplayer is today and where it's heading. [PokeMMO](https://pokemmo.com
 the reference point for the multiplayer feature set — not to clone it, but as a concrete
 target for what "good" looks like.
 
-## Where we are (v1.5.0)
+## Where we are (v1.8.0)
 
 - Real-time shared overworld: see other players walk, up to 8.
 - Player-vs-player **trade** and **battle** over emulated link cable.
@@ -78,7 +78,11 @@ belongs to the far end of the roadmap.
       in a small file next to the script, and the server keeps token→nickname accounts on
       disk. Restart anything — emulator, PC, even the server — and you come back as
       yourself; your nickname is protected even while you're offline.
-- [ ] **Global vs local visibility** — show only players on the same map/route (scales past 8).
+- [x] **Map-local visibility** *(v1.8.0)* — above a room-population threshold (`--local=N`,
+      default 7) the server only introduces and syncs players on the same map (with a
+      transition grace so border crossings don't flicker), removing them again when they part
+      ways, capped at 8 visible per client (the renderer's slot limit). One server can now
+      hold far more players than one screen.
 - [ ] **Spectating** trades/battles; **matchmaking** queues for battles.
 - [ ] **Trade/battle validation** on the server (prevent malformed or cheated packets).
 
