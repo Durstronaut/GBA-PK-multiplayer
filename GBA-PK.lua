@@ -11,7 +11,7 @@ local ServerIP   = "127.0.0.1"   -- the host's IP address (only used when joinin
 local Port       = 4096          -- must be the same for everyone in the session
 local MaxPlayers = 4             -- players per session (supports up to 8)
 local AutoReconnect = true       -- rejoin a dedicated server automatically if the link drops
-local ScriptVersion = "1.7.0"    -- GBA-PK release version
+local ScriptVersion = "1.8.0"    -- GBA-PK release version
 -- ======================================================================
 local IPAddress  = ServerIP      -- internal alias (do not edit)
 local ServerType = "c"           -- internal, derived from Role/commands
@@ -10671,6 +10671,12 @@ function Connection()
 					end
 					return
 				end
+			end
+			--GBA-PK: on a dedicated server, keep sending position even when nobody is
+			--visible — with map-local visibility (v1.8.0 servers) the server needs your
+			--SPOS to know you changed maps and introduce whoever is there.
+			if ServerIsDedicated and #players <= 1 then
+				SendData(SocketMain, "SPOS", PlayerID)
 			end
 			if #players > 1 then
 				for i, player in ipairs(players) do
